@@ -1,0 +1,6 @@
+{
+  "name": "Blox Fruit Services",
+  "description": "Production-ready Blox Fruit in-game raid, trial, and boss carry services paid strictly in in-game fruits and gamepasses with 50/50 payment escrow.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
