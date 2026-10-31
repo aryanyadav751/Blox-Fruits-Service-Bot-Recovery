@@ -13,6 +13,13 @@ import {
   createStaffSessionToken, 
   verifyStaffSessionToken 
 } from './src/lib/auth.ts';
+import {
+  isStorageConfigured,
+  getStorageBucketName,
+  generateUploadPresignedUrl,
+  generateDownloadPresignedUrl,
+  validateMediaUpload,
+} from './src/lib/storage.ts';
 
 dotenv.config();
 
@@ -112,7 +119,8 @@ app.post('/api/orders', (req, res) => {
       availability,
       paymentType,
       items,
-      customerNote
+      customerNote,
+      consentPublicProofs,
     } = req.body;
 
     // Validation
@@ -184,6 +192,7 @@ app.post('/api/orders', (req, res) => {
         remainingHundredths,
         customerNote: customerNote ? String(customerNote).trim().slice(0, 500) : null,
         staffNotes: null,
+        consentPublicProofs: Boolean(consentPublicProofs),
       },
       orderItemsData
     );
@@ -247,6 +256,7 @@ app.get('/api/orders/track/:token', (req, res) => {
         depositM: (order.depositHundredths / 100).toFixed(2),
         remainingM: (order.remainingHundredths / 100).toFixed(2),
         customerNote: order.customerNote,
+        consentPublicProofs: order.consentPublicProofs,
         createdAt: order.createdAt,
         updatedAt: order.updatedAt,
         items: items.map(i => ({
@@ -269,6 +279,195 @@ app.get('/api/orders/track/:token', (req, res) => {
   } catch (err: any) {
     console.error('Error tracking order:', err);
     res.status(500).json({ success: false, error: 'Failed to retrieve order status' });
+  }
+});
+
+// 5. Submit Customer Support Enquiry
+app.post('/api/support/enquiries', (req, res) => {
+  const ip = req.headers['x-forwarded-for']?.toString() || req.socket.remoteAddress || 'unknown';
+  if (!checkRateLimit(`enquiry_${ip}`, 8, 60000)) {
+    return res.status(429).json({ 
+      success: false, 
+      error: 'Too many requests. Please wait a minute before submitting another enquiry.' 
+    });
+  }
+
+  try {
+    const { robloxUsername, customerName, discordTag, orderCodeOrId, subject, message } = req.body;
+    if (!robloxUsername || !subject || !message) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Roblox username, subject, and message are required.' 
+      });
+    }
+
+    const cleanUsername = String(robloxUsername).trim();
+    const cleanSubject = String(subject).trim().slice(0, 150);
+    const cleanMessage = String(message).trim().slice(0, 2000);
+
+    const enquiry = dbRepository.createEnquiry({
+      source: 'website',
+      customerName: customerName ? String(customerName).trim().slice(0, 100) : null,
+      robloxUsername: cleanUsername,
+      discordTag: discordTag ? String(discordTag).trim().slice(0, 100) : null,
+      orderCodeOrId: orderCodeOrId ? String(orderCodeOrId).trim().toUpperCase() : null,
+      subject: cleanSubject,
+      message: cleanMessage,
+      status: 'pending',
+      staffNotes: null,
+    });
+
+    res.status(201).json({ 
+      success: true, 
+      enquiryId: enquiry.id, 
+      message: 'Support enquiry submitted. Our staff will review it shortly!' 
+    });
+  } catch (err: any) {
+    console.error('Submit enquiry error:', err);
+    res.status(500).json({ success: false, error: 'Failed to submit enquiry' });
+  }
+});
+
+// 6. Public Proofs Showcase (Strictly Customer Consented + Staff Approved)
+app.get('/api/proofs', async (_req, res) => {
+  try {
+    const proofs = dbRepository.getPublicProofs();
+
+    // If evidence points to an S3 object key and storage is configured,
+    // generate a presigned download URL for viewing so private bucket objects can be displayed safely
+    const enriched = await Promise.all(
+      proofs.map(async (p) => {
+        if (p.mediaUrl && p.mediaUrl.startsWith('evidence/') && isStorageConfigured()) {
+          try {
+            const presignedUrl = await generateDownloadPresignedUrl(p.mediaUrl, 3600);
+            return { ...p, mediaUrl: presignedUrl, storageKey: p.mediaUrl };
+          } catch (e) {
+            console.error('Failed presigning mediaUrl for proof:', p.id, e);
+          }
+        }
+        return p;
+      })
+    );
+
+    res.json({ success: true, proofs: enriched });
+  } catch (err: any) {
+    console.error('Error fetching proofs:', err);
+    res.status(500).json({ success: false, error: 'Failed to fetch public proofs' });
+  }
+});
+
+// 7. Ongoing Services (Active Carries Queue - Privacy Masked unless consented)
+app.get('/api/ongoing', (_req, res) => {
+  try {
+    const activeCarries = dbRepository.getOngoingCarries();
+    res.json({ success: true, activeCarries });
+  } catch (err: any) {
+    console.error('Error fetching ongoing carries:', err);
+    res.status(500).json({ success: false, error: 'Failed to fetch ongoing carries' });
+  }
+});
+
+// 8. Generate Presigned Upload URL for Screenshots and Videos
+// Keeps customer uploads private by default in 'blox-fruit-services-media'
+app.post('/api/storage/presigned-upload', async (req, res) => {
+  try {
+    const staffToken = extractStaffToken(req);
+    const staffSession = staffToken ? verifyStaffSessionToken(staffToken) : null;
+
+    const { orderId, publicToken, filename, contentType } = req.body;
+
+    if (!filename || !contentType) {
+      return res.status(400).json({ success: false, error: 'filename and contentType are required' });
+    }
+
+    // Permission check: Must be authenticated staff OR customer with valid publicToken matching the order
+    if (!staffSession) {
+      if (!publicToken || !orderId) {
+        return res.status(401).json({ 
+          success: false, 
+          error: 'Unauthorized: Staff session or order public tracking token required to request upload URL' 
+        });
+      }
+      const order = dbRepository.getOrderById(orderId);
+      if (!order || order.publicToken !== publicToken) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Invalid order tracking token' });
+      }
+    }
+
+    const validation = validateMediaUpload(filename, contentType);
+    if (!validation.valid) {
+      return res.status(400).json({ success: false, error: validation.error });
+    }
+
+    const result = await generateUploadPresignedUrl({
+      orderId,
+      filename,
+      contentType,
+      expiresInSeconds: 900,
+    });
+
+    res.json({
+      success: true,
+      uploadUrl: result.uploadUrl,
+      fileKey: result.fileKey,
+      bucket: result.bucket,
+      expiresIn: result.expiresIn,
+    });
+  } catch (err: any) {
+    console.error('Error generating presigned upload URL:', err);
+    res.status(500).json({ 
+      success: false, 
+      error: err.message || 'Failed to generate presigned upload URL' 
+    });
+  }
+});
+
+// 9. Generate Presigned Download URL for Private Media Access
+app.get('/api/storage/presigned-download', async (req, res) => {
+  try {
+    const { key, publicToken } = req.query;
+    if (!key || typeof key !== 'string') {
+      return res.status(400).json({ success: false, error: 'File key is required' });
+    }
+
+    const staffToken = extractStaffToken(req);
+    const staffSession = staffToken ? verifyStaffSessionToken(staffToken) : null;
+
+    // Check permissions: Staff can view all evidence;
+    // Customer can view if publicToken matches the order referenced in key;
+    // Or if the evidence has public approval and customer consent.
+    let isAuthorized = Boolean(staffSession);
+
+    if (!isAuthorized) {
+      const allEvidence = dbRepository.listEvidence({ isCompleted: true, staffApprovedPublic: true });
+      const publicItem = allEvidence.find(e => e.mediaUrl === key && e.customerConsentPublic);
+      if (publicItem) {
+        isAuthorized = true;
+      }
+    }
+
+    if (!isAuthorized && publicToken && typeof publicToken === 'string') {
+      const order = dbRepository.getOrderByPublicToken(publicToken);
+      if (order && key.includes(`/${order.id}/`)) {
+        isAuthorized = true;
+      }
+    }
+
+    if (!isAuthorized) {
+      return res.status(403).json({ 
+        success: false, 
+        error: 'Forbidden: You do not have permission to access this private media' 
+      });
+    }
+
+    const downloadUrl = await generateDownloadPresignedUrl(key, 3600);
+    res.json({ success: true, downloadUrl });
+  } catch (err: any) {
+    console.error('Error generating presigned download URL:', err);
+    res.status(500).json({ 
+      success: false, 
+      error: err.message || 'Failed to generate download URL' 
+    });
   }
 });
 
@@ -673,6 +872,149 @@ app.delete('/api/admin/catalog/:id', requireStaffAuth, (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to delete service' });
   }
 });
+
+// 11. Staff Support Inbox: List & Search Enquiries
+app.get('/api/admin/enquiries', requireStaffAuth, (req, res) => {
+  try {
+    const status = req.query.status?.toString();
+    const search = req.query.search?.toString();
+    const enquiries = dbRepository.listEnquiries({ status, search });
+    res.json({ success: true, enquiries });
+  } catch (err: any) {
+    console.error('List enquiries error:', err);
+    res.status(500).json({ success: false, error: 'Failed to fetch enquiries' });
+  }
+});
+
+// 12. Staff Manual Enquiry Recording (Discord DMs / In-Game tickets)
+app.post('/api/admin/enquiries', requireStaffAuth, (req, res) => {
+  try {
+    const { source, robloxUsername, customerName, discordTag, orderCodeOrId, subject, message, status, staffNotes } = req.body;
+    if (!robloxUsername || !subject || !message) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Roblox username, subject, and message are required' 
+      });
+    }
+
+    const cleanUsername = String(robloxUsername).trim();
+    const enquiry = dbRepository.createEnquiry({
+      source: ['website', 'discord', 'direct'].includes(source) ? source : 'discord',
+      customerName: customerName ? String(customerName).trim().slice(0, 100) : null,
+      robloxUsername: cleanUsername,
+      discordTag: discordTag ? String(discordTag).trim().slice(0, 100) : null,
+      orderCodeOrId: orderCodeOrId ? String(orderCodeOrId).trim().toUpperCase() : null,
+      subject: String(subject).trim().slice(0, 150),
+      message: String(message).trim().slice(0, 2000),
+      status: ['pending', 'in_progress', 'resolved'].includes(status) ? status : 'pending',
+      staffNotes: staffNotes ? String(staffNotes).trim() : null,
+    });
+
+    res.status(201).json({ success: true, enquiry });
+  } catch (err: any) {
+    console.error('Record manual enquiry error:', err);
+    res.status(500).json({ success: false, error: 'Failed to record manual enquiry' });
+  }
+});
+
+// 13. Update Enquiry Status & Staff Notes
+app.patch('/api/admin/enquiries/:id', requireStaffAuth, (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, staffNotes } = req.body;
+
+    if (!['pending', 'in_progress', 'resolved'].includes(status)) {
+      return res.status(400).json({ success: false, error: 'Invalid status' });
+    }
+
+    const updated = dbRepository.updateEnquiryStatus(id, status, staffNotes);
+    if (!updated) {
+      return res.status(404).json({ success: false, error: 'Enquiry not found' });
+    }
+
+    res.json({ success: true, enquiry: updated });
+  } catch (err: any) {
+    console.error('Update enquiry error:', err);
+    res.status(500).json({ success: false, error: 'Failed to update enquiry' });
+  }
+});
+
+// 14. Record Service Evidence / Screen-Share Verification
+app.post('/api/admin/orders/:id/evidence', requireStaffAuth, (req, res) => {
+  try {
+    const { id } = req.params;
+    const { evidenceType, mediaUrl, notes, customerConsentPublic, staffApprovedPublic, isOngoing, isCompleted } = req.body;
+
+    const order = dbRepository.getOrderById(id);
+    if (!order) {
+      return res.status(404).json({ success: false, error: 'Order not found' });
+    }
+
+    if (!evidenceType || !mediaUrl) {
+      return res.status(400).json({ success: false, error: 'Evidence type and media URL/link are required' });
+    }
+
+    const session = (req as any).staffSession;
+    const ev = dbRepository.createEvidence({
+      orderId: order.id,
+      serviceId: order.serviceId,
+      evidenceType: ['screenshot', 'video_link', 'screen_share_session'].includes(evidenceType) ? evidenceType : 'screenshot',
+      mediaUrl: String(mediaUrl).trim(),
+      notes: notes ? String(notes).trim() : null,
+      customerConsentPublic: Boolean(customerConsentPublic),
+      staffApprovedPublic: Boolean(staffApprovedPublic),
+      isOngoing: Boolean(isOngoing),
+      isCompleted: isCompleted !== undefined ? Boolean(isCompleted) : true,
+      reviewedAt: staffApprovedPublic ? new Date().toISOString() : null,
+      reviewedBy: staffApprovedPublic ? session.staffId : null,
+    });
+
+    dbRepository.addAuditLog(
+      id,
+      'staff',
+      'EVIDENCE_RECORDED',
+      `Evidence (${ev.evidenceType}) recorded by ${session.staffId}. Public approval: ${ev.staffApprovedPublic}`
+    );
+
+    res.status(201).json({ success: true, evidence: ev });
+  } catch (err: any) {
+    console.error('Attach evidence error:', err);
+    res.status(500).json({ success: false, error: 'Failed to attach evidence' });
+  }
+});
+
+// 15. List Evidence for an Order
+app.get('/api/admin/orders/:id/evidence', requireStaffAuth, (req, res) => {
+  try {
+    const { id } = req.params;
+    const evidence = dbRepository.getEvidenceByOrderId(id);
+    res.json({ success: true, evidence });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: 'Failed to retrieve evidence' });
+  }
+});
+
+// 16. Toggle Evidence Public Approval
+app.post('/api/admin/evidence/:id/approval', requireStaffAuth, (req, res) => {
+  try {
+    const { id } = req.params;
+    const { staffApprovedPublic } = req.body;
+    const session = (req as any).staffSession;
+
+    const updated = dbRepository.updateEvidenceApproval(id, Boolean(staffApprovedPublic), session.staffId);
+    if (!updated) {
+      return res.status(404).json({ success: false, error: 'Evidence not found' });
+    }
+
+    res.json({ success: true, evidence: updated });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: 'Failed to update approval' });
+  }
+});
+
+export { app };
+export default app;
+
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
 
@@ -696,6 +1038,9 @@ async function startServer() {
   });
 }
 
-startServer().catch((err) => {
-  console.error('Failed to start server:', err);
-});
+// Only start the standalone listener if not invoked as a serverless function (e.g. Vercel)
+if (process.env.VERCEL !== '1') {
+  startServer().catch((err) => {
+    console.error('Failed to start server:', err);
+  });
+}

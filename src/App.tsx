@@ -9,6 +9,9 @@ import { OrderStatusPage } from './pages/OrderStatusPage.tsx';
 import { AdminLoginPage } from './pages/admin/AdminLoginPage.tsx';
 import { AdminDashboardPage } from './pages/admin/AdminDashboardPage.tsx';
 import { AdminOrderDetailPage } from './pages/admin/AdminOrderDetailPage.tsx';
+import { SupportPage } from './pages/SupportPage.tsx';
+import { ProofsPage } from './pages/ProofsPage.tsx';
+import { OngoingPage } from './pages/OngoingPage.tsx';
 import { Service } from './types/index.ts';
 import { api } from './lib/api.ts';
 
@@ -127,6 +130,18 @@ export default function App() {
             initialToken={trackingToken}
             onNavigate={navigate}
           />
+        )}
+
+        {(pathOnly === '/support' || pathOnly === '/contact') && (
+          <SupportPage onNavigate={navigate} />
+        )}
+
+        {pathOnly === '/proofs' && (
+          <ProofsPage onNavigate={navigate} />
+        )}
+
+        {(pathOnly === '/ongoing' || pathOnly === '/active') && (
+          <OngoingPage onNavigate={navigate} />
         )}
 
         {/* ADMIN ROUTES */}

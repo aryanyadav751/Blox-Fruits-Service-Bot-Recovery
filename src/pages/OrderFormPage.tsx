@@ -66,6 +66,7 @@ export const OrderFormPage: React.FC<OrderFormPageProps> = ({
     { itemName: '', quantity: 1, proposedValueM: '' },
   ]);
   const [customerNote, setCustomerNote] = useState('');
+  const [consentPublicProofs, setConsentPublicProofs] = useState(false);
 
   // Submission State
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -209,6 +210,7 @@ export const OrderFormPage: React.FC<OrderFormPageProps> = ({
         paymentType,
         items: validItems,
         customerNote: customerNote.trim() || undefined,
+        consentPublicProofs,
       });
 
       setConfirmedOrder(response);
@@ -799,6 +801,20 @@ export const OrderFormPage: React.FC<OrderFormPageProps> = ({
                 <li>Do not drop fruits on the ground — all trades use the safe in-game trade window.</li>
               </ul>
             </div>
+
+            {/* Public Proof Showcase Consent (Optional) */}
+            <label className="flex items-start gap-3 p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition-colors">
+              <input
+                type="checkbox"
+                checked={consentPublicProofs}
+                onChange={(e) => setConsentPublicProofs(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-slate-700 bg-slate-900 text-amber-500 focus:ring-amber-400"
+              />
+              <span className="text-xs text-slate-300">
+                <strong className="text-white block mb-0.5">Showcase on Public Proofs Wall (Optional)</strong>
+                I consent to having my carry completion screenshots and order displayed on the public Proofs page once verified by staff.
+              </span>
+            </label>
           </div>
         </div>
       )}

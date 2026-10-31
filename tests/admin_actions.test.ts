@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { 
   verifyAdminPassword, 
+  getAdminPassword,
   createStaffSessionToken, 
   verifyStaffSessionToken 
 } from '../src/lib/auth.ts';
@@ -11,8 +12,9 @@ console.log('--- RUNNING STAGE 3 ADMIN AUTH & STAFF ACTIONS TESTS ---');
 
 // Test 1: Password Verification
 {
-  assert.equal(verifyAdminPassword('bloxfruit_staff_2026'), true, 'Correct default password passes');
-  assert.equal(verifyAdminPassword('wrong_password'), false, 'Incorrect password fails');
+  const activePassword = getAdminPassword();
+  assert.equal(verifyAdminPassword(activePassword), true, 'Correct configured password passes');
+  assert.equal(verifyAdminPassword('wrong_password_incorrect_123'), false, 'Incorrect password fails');
   assert.equal(verifyAdminPassword(''), false, 'Empty password fails');
 }
 console.log('✓ Admin password constant-time verification passed');

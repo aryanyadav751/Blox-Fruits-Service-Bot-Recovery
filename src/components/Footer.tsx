@@ -1,5 +1,5 @@
 import React from 'react';
-import { ShieldCheck, AlertCircle, Sparkles } from 'lucide-react';
+import { ShieldCheck, AlertCircle, Sparkles, MessageSquare, ExternalLink, Activity } from 'lucide-react';
 
 export const Footer: React.FC = () => {
   return (
@@ -14,18 +14,18 @@ export const Footer: React.FC = () => {
             </h4>
             <p className="text-xs text-slate-400 leading-relaxed">
               This service operates exclusively on Roblox in-game trade values measured in Millions (M). 
-              We never accept or ask for real currency (no USD, INR, cash, or wire transfers).
+              We never accept or ask for real currency (no USD, EUR, INR, cash, or real-money transfers).
             </p>
           </div>
 
           <div className="space-y-2">
             <h4 className="text-white font-semibold flex items-center gap-2">
               <AlertCircle className="w-4 h-4 text-amber-400" />
-              <span>Zero Account Access</span>
+              <span>Zero Account Access & Passwords</span>
             </h4>
             <p className="text-xs text-slate-400 leading-relaxed">
-              We will NEVER request your Roblox password, security cookies, 2FA codes, or credentials. 
-              All services are delivered as in-game co-op carries and party invites.
+              We will NEVER request your Roblox password, .ROBLOSECURITY cookies, or 2FA codes. 
+              Carries take place in co-op parties with voluntary Discord gameplay window screen-sharing.
             </p>
           </div>
 
@@ -41,12 +41,26 @@ export const Footer: React.FC = () => {
           </div>
         </div>
 
-        <div className="border-t border-slate-900 pt-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
-          <div>
-            <span>Blox Fruit Services · Community-driven in-game carry platform</span>
+        {/* Quick Links Strip */}
+        <div className="border-t border-slate-900 pt-6 flex flex-wrap items-center justify-between gap-4 text-xs">
+          <div className="flex items-center gap-6 text-slate-400">
+            <a href="/services" className="hover:text-amber-400 transition-colors">Catalog</a>
+            <a href="/ongoing" className="hover:text-amber-400 transition-colors">Active Queue</a>
+            <a href="/proofs" className="hover:text-amber-400 transition-colors">Proofs Wall</a>
+            <a href="/support" className="hover:text-amber-400 transition-colors">Customer Support</a>
+            <a 
+              href="https://discord.gg/placeholder-blox-fruit-services" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
+            >
+              <span>Discord Community</span>
+              <ExternalLink className="w-3 h-3" />
+            </a>
           </div>
-          <div>
-            <span>Not affiliated with Roblox Corporation or Gamer Robot Inc.</span>
+
+          <div className="text-slate-500 text-[11px]">
+            <span>Blox Fruit Services · Not affiliated with Roblox Corporation or Gamer Robot Inc.</span>
           </div>
         </div>
       </div>

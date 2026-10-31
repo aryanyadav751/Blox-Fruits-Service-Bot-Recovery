@@ -1,4 +1,12 @@
-import { Service, PublicOrder, ProposedItem } from '../types/index.ts';
+import { 
+  Service, 
+  PublicOrder, 
+  ProposedItem, 
+  Enquiry, 
+  CreateEnquiryPayload,
+  ServiceEvidence,
+  OngoingServiceItem 
+} from '../types/index.ts';
 
 export interface CreateOrderPayload {
   serviceId: string;
@@ -8,6 +16,7 @@ export interface CreateOrderPayload {
   paymentType: 'fruits' | 'gamepass' | 'combination';
   items: ProposedItem[];
   customerNote?: string;
+  consentPublicProofs?: boolean;
 }
 
 export interface CreateOrderResponse {
@@ -63,55 +72,77 @@ export const api = {
     return data.order;
   },
 
-  // --- ADMIN API ---
-  getStoredStaffToken(): string | null {
-    return localStorage.getItem('bfs_staff_token');
-  },
-
-  setStoredStaffToken(token: string | null) {
-    if (token) {
-      localStorage.setItem('bfs_staff_token', token);
-    } else {
-      localStorage.removeItem('bfs_staff_token');
+  // --- CUSTOMER SERVICE (SUPPORT) ---
+  async submitEnquiry(payload: {
+    robloxUsername: string;
+    customerName?: string;
+    discordTag?: string;
+    orderCodeOrId?: string;
+    subject: string;
+    message: string;
+  }): Promise<{ success: boolean; enquiryId: string; message: string }> {
+    const res = await fetch('/api/support/enquiries', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to submit support enquiry');
     }
+    return data;
   },
 
-  async adminLogin(password: string): Promise<{ success: boolean; token: string }> {
+  // --- PROOFS & ONGOING CARRIES ---
+  async getPublicProofs(): Promise<ServiceEvidence[]> {
+    const res = await fetch('/api/proofs');
+    const data = await res.json();
+    if (!data.success) {
+      throw new Error(data.error || 'Failed to fetch proofs');
+    }
+    return data.proofs;
+  },
+
+  async getOngoingCarries(): Promise<OngoingServiceItem[]> {
+    const res = await fetch('/api/ongoing');
+    const data = await res.json();
+    if (!data.success) {
+      throw new Error(data.error || 'Failed to fetch active carries');
+    }
+    return data.activeCarries;
+  },
+
+  // --- ADMIN AUTH (HTTP-ONLY COOKIES FOR SECURITY) ---
+  async adminLogin(password: string): Promise<{ success: boolean; role: string }> {
     const res = await fetch('/api/admin/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ password }),
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
       throw new Error(data.error || 'Login failed');
     }
-    this.setStoredStaffToken(data.token);
     return data;
   },
 
   async adminLogout(): Promise<void> {
-    const token = this.getStoredStaffToken();
     try {
       await fetch('/api/admin/logout', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
       });
-    } finally {
-      this.setStoredStaffToken(null);
+    } catch (e) {
+      console.warn('Logout request failed:', e);
     }
   },
 
   async adminCheckSession(): Promise<boolean> {
-    const token = this.getStoredStaffToken();
     try {
       const res = await fetch('/api/admin/me', {
-        headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
+        credentials: 'include',
       });
       const data = await res.json();
       return Boolean(res.ok && data.success);
@@ -120,16 +151,14 @@ export const api = {
     }
   },
 
+  // --- ADMIN ORDERS ---
   async adminGetOrders(status?: string, search?: string): Promise<any[]> {
-    const token = this.getStoredStaffToken();
     const params = new URLSearchParams();
     if (status) params.set('status', status);
     if (search) params.set('search', search);
 
     const res = await fetch(`/api/admin/orders?${params.toString()}`, {
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      credentials: 'include',
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
@@ -139,11 +168,8 @@ export const api = {
   },
 
   async adminGetOrder(id: string): Promise<any> {
-    const token = this.getStoredStaffToken();
     const res = await fetch(`/api/admin/orders/${encodeURIComponent(id)}`, {
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      credentials: 'include',
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
@@ -153,13 +179,10 @@ export const api = {
   },
 
   async adminUpdateOrderStatus(id: string, status: string, note?: string): Promise<void> {
-    const token = this.getStoredStaffToken();
     const res = await fetch(`/api/admin/orders/${encodeURIComponent(id)}/status`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status, note }),
     });
     const data = await res.json();
@@ -169,13 +192,10 @@ export const api = {
   },
 
   async adminUpdateItemValuation(orderId: string, itemId: string, agreedValueM: number | null, verified: boolean): Promise<void> {
-    const token = this.getStoredStaffToken();
     const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(itemId)}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ agreedValueM, verified }),
     });
     const data = await res.json();
@@ -185,13 +205,10 @@ export const api = {
   },
 
   async adminRecordPayment(orderId: string, kind: 'deposit' | 'remaining', amountM: number, itemsJson: string, staffName: string): Promise<void> {
-    const token = this.getStoredStaffToken();
     const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/payments`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind, amountM, itemsJson, staffName }),
     });
     const data = await res.json();
@@ -201,13 +218,10 @@ export const api = {
   },
 
   async adminUpdateStaffNotes(orderId: string, staffNotes: string): Promise<void> {
-    const token = this.getStoredStaffToken();
     const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/notes`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ staffNotes }),
     });
     const data = await res.json();
@@ -216,13 +230,102 @@ export const api = {
     }
   },
 
-  // Catalog CRUD for Stage 4
+  // --- STAFF SUPPORT INBOX ---
+  async adminGetEnquiries(status?: string, search?: string): Promise<Enquiry[]> {
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    if (search) params.set('search', search);
+
+    const res = await fetch(`/api/admin/enquiries?${params.toString()}`, {
+      credentials: 'include',
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to fetch enquiries');
+    }
+    return data.enquiries;
+  },
+
+  async adminCreateManualEnquiry(payload: CreateEnquiryPayload): Promise<Enquiry> {
+    const res = await fetch('/api/admin/enquiries', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to log manual enquiry');
+    }
+    return data.enquiry;
+  },
+
+  async adminUpdateEnquiryStatus(id: string, status: 'pending' | 'in_progress' | 'resolved', staffNotes?: string): Promise<Enquiry> {
+    const res = await fetch(`/api/admin/enquiries/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, staffNotes }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to update enquiry status');
+    }
+    return data.enquiry;
+  },
+
+  // --- EVIDENCE & PROOFS MODERATION ---
+  async adminGetOrderEvidence(orderId: string): Promise<ServiceEvidence[]> {
+    const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/evidence`, {
+      credentials: 'include',
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to fetch evidence');
+    }
+    return data.evidence;
+  },
+
+  async adminRecordOrderEvidence(orderId: string, payload: {
+    evidenceType: 'screenshot' | 'video_link' | 'screen_share_session';
+    mediaUrl: string;
+    notes?: string;
+    customerConsentPublic: boolean;
+    staffApprovedPublic: boolean;
+    isOngoing?: boolean;
+    isCompleted?: boolean;
+  }): Promise<ServiceEvidence> {
+    const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/evidence`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to record evidence');
+    }
+    return data.evidence;
+  },
+
+  async adminToggleEvidenceApproval(evidenceId: string, staffApprovedPublic: boolean): Promise<ServiceEvidence> {
+    const res = await fetch(`/api/admin/evidence/${encodeURIComponent(evidenceId)}/approval`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ staffApprovedPublic }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to toggle evidence approval');
+    }
+    return data.evidence;
+  },
+
+  // --- CATALOG CRUD ---
   async adminGetCatalog(): Promise<Service[]> {
-    const token = this.getStoredStaffToken();
     const res = await fetch('/api/admin/catalog', {
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      credentials: 'include',
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
@@ -232,13 +335,10 @@ export const api = {
   },
 
   async adminCreateService(payload: Partial<Service>): Promise<Service> {
-    const token = this.getStoredStaffToken();
     const res = await fetch('/api/admin/catalog', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     const data = await res.json();
@@ -249,13 +349,10 @@ export const api = {
   },
 
   async adminUpdateService(id: string, updates: Partial<Service>): Promise<Service> {
-    const token = this.getStoredStaffToken();
     const res = await fetch(`/api/admin/catalog/${encodeURIComponent(id)}`, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates),
     });
     const data = await res.json();
@@ -266,12 +363,9 @@ export const api = {
   },
 
   async adminDeleteService(id: string): Promise<void> {
-    const token = this.getStoredStaffToken();
     const res = await fetch(`/api/admin/catalog/${encodeURIComponent(id)}`, {
       method: 'DELETE',
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      credentials: 'include',
     });
     const data = await res.json();
     if (!res.ok || !data.success) {

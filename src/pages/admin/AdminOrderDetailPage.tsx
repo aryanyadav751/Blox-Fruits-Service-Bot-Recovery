@@ -54,6 +54,26 @@ export const AdminOrderDetailPage: React.FC<AdminOrderDetailPageProps> = ({
   const [itemValues, setItemValues] = useState<Record<string, string>>({});
   const [itemVerified, setItemVerified] = useState<Record<string, boolean>>({});
 
+  // Evidence & Screen-sharing states
+  const [evidenceList, setEvidenceList] = useState<any[]>([]);
+  const [showAddEvidence, setShowAddEvidence] = useState(false);
+  const [evidenceForm, setEvidenceForm] = useState({
+    evidenceType: 'screenshot' as 'screenshot' | 'video_link' | 'screen_share_session',
+    mediaUrl: '',
+    notes: '',
+    staffApprovedPublic: false,
+  });
+  const [savingEvidence, setSavingEvidence] = useState(false);
+
+  const loadEvidence = async (targetOrderId: string) => {
+    try {
+      const list = await api.adminGetOrderEvidence(targetOrderId);
+      setEvidenceList(list);
+    } catch (err) {
+      console.warn('Failed to load evidence:', err);
+    }
+  };
+
   const loadOrderDetail = async () => {
     setLoading(true);
     setError(null);
@@ -71,6 +91,8 @@ export const AdminOrderDetailPage: React.FC<AdminOrderDetailPageProps> = ({
       }
       setItemValues(valMap);
       setItemVerified(verMap);
+
+      await loadEvidence(data.id);
     } catch (err: any) {
       setError(err.message || 'Failed to load order details');
     } finally {
@@ -98,6 +120,41 @@ export const AdminOrderDetailPage: React.FC<AdminOrderDetailPageProps> = ({
       alert(err.message || 'Failed to save staff notes');
     } finally {
       setSavingNotes(false);
+    }
+  };
+
+  // Toggle evidence public approval
+  const handleToggleApproval = async (evId: string, current: boolean) => {
+    try {
+      await api.adminToggleEvidenceApproval(evId, !current);
+      await loadEvidence(order.id);
+      showSuccessNotice(!current ? 'Approved for public Proofs showcase' : 'Removed from public Proofs showcase');
+    } catch (err: any) {
+      alert(err.message || 'Failed to update approval');
+    }
+  };
+
+  // Save new evidence
+  const handleSaveEvidence = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!evidenceForm.mediaUrl.trim()) return;
+    setSavingEvidence(true);
+    try {
+      await api.adminRecordOrderEvidence(order.id, {
+        evidenceType: evidenceForm.evidenceType,
+        mediaUrl: evidenceForm.mediaUrl.trim(),
+        notes: evidenceForm.notes.trim() || undefined,
+        customerConsentPublic: Boolean(order.consentPublicProofs),
+        staffApprovedPublic: evidenceForm.staffApprovedPublic,
+      });
+      setShowAddEvidence(false);
+      setEvidenceForm({ evidenceType: 'screenshot', mediaUrl: '', notes: '', staffApprovedPublic: false });
+      await loadEvidence(order.id);
+      showSuccessNotice('Evidence attached to order');
+    } catch (err: any) {
+      alert(err.message || 'Failed to attach evidence');
+    } finally {
+      setSavingEvidence(false);
     }
   };
 
@@ -285,6 +342,12 @@ export const AdminOrderDetailPage: React.FC<AdminOrderDetailPageProps> = ({
             <div className="flex justify-between py-1 border-b border-slate-900">
               <span className="text-slate-400">Payment Category:</span>
               <span className="text-slate-200 capitalize">{order.paymentType}</span>
+            </div>
+            <div className="flex justify-between py-1 border-b border-slate-900">
+              <span className="text-slate-400">Public Proofs Consent:</span>
+              <span className={`font-semibold ${order.consentPublicProofs ? 'text-emerald-400' : 'text-slate-400'}`}>
+                {order.consentPublicProofs ? '✓ Consented to Showcase' : 'Anonymity Requested'}
+              </span>
             </div>
             {order.customerNote && (
               <div className="pt-1 text-slate-400">
@@ -557,6 +620,152 @@ export const AdminOrderDetailPage: React.FC<AdminOrderDetailPageProps> = ({
             </button>
           </div>
         </div>
+      </div>
+
+      {/* SERVICE EVIDENCE & PROOF OF COMPLETION (REQUIREMENT 3 & 4) */}
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4 shadow-xl">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
+          <div>
+            <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+              <span>Completion Evidence & Screen-Sharing Verification</span>
+            </h3>
+            <p className="text-xs text-slate-400">
+              Attach screenshots, video recordings, or Discord live screen-share session notes.
+            </p>
+          </div>
+
+          <button
+            onClick={() => setShowAddEvidence(!showAddEvidence)}
+            className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs transition-colors self-start sm:self-auto"
+          >
+            {showAddEvidence ? 'Cancel' : '+ Attach Evidence'}
+          </button>
+        </div>
+
+        {/* Screen-Share Safe Coordination Callout */}
+        <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5 text-xs text-slate-300 space-y-1">
+          <div className="font-semibold text-amber-300 flex items-center gap-1.5">
+            <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
+            <span>Screen-Sharing & Proof Protocol:</span>
+          </div>
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            Customers may voluntarily share <strong>only their Roblox application window</strong> over Discord. Staff members never request passwords, 2FA codes, or session cookies. Evidence published to the public Proofs wall strictly requires customer consent (currently: <strong className={order.consentPublicProofs ? 'text-emerald-300' : 'text-slate-300'}>{order.consentPublicProofs ? 'Granted' : 'Not Granted'}</strong>).
+          </p>
+        </div>
+
+        {/* Add Evidence Form */}
+        {showAddEvidence && (
+          <form onSubmit={handleSaveEvidence} className="bg-slate-950 p-4 rounded-2xl border border-amber-500/30 space-y-3">
+            <h4 className="text-xs font-bold text-white uppercase">Record New Evidence</h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1">Evidence Type</label>
+                <select
+                  value={evidenceForm.evidenceType}
+                  onChange={(e) => setEvidenceForm({ ...evidenceForm, evidenceType: e.target.value as any })}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-amber-400"
+                >
+                  <option value="screenshot">Screenshot (Image URL)</option>
+                  <option value="video_link">Video Recording (YouTube / Streamable)</option>
+                  <option value="screen_share_session">Live Discord Screen-Share Session</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1">Media URL or Session Note <span className="text-amber-400">*</span></label>
+                <input
+                  type="text"
+                  value={evidenceForm.mediaUrl}
+                  onChange={(e) => setEvidenceForm({ ...evidenceForm, mediaUrl: e.target.value })}
+                  placeholder="https://... or Discord Session ID"
+                  required
+                  className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-amber-400"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[11px] text-slate-400 block mb-1">Evidence Notes</label>
+              <input
+                type="text"
+                value={evidenceForm.notes}
+                onChange={(e) => setEvidenceForm({ ...evidenceForm, notes: e.target.value })}
+                placeholder="e.g. Dough Raid completed in 4 minutes, boss cleared on wave 5"
+                className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-amber-400"
+              />
+            </div>
+
+            <div className="flex items-center justify-between pt-2">
+              <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={evidenceForm.staffApprovedPublic}
+                  onChange={(e) => setEvidenceForm({ ...evidenceForm, staffApprovedPublic: e.target.checked })}
+                  disabled={!order.consentPublicProofs}
+                  className="rounded border-slate-700 text-amber-500 focus:ring-0"
+                />
+                <span className={order.consentPublicProofs ? 'text-slate-200' : 'text-slate-500'}>
+                  Approve for Public Proofs Wall {!order.consentPublicProofs && '(Customer requested anonymity)'}
+                </span>
+              </label>
+
+              <button
+                type="submit"
+                disabled={savingEvidence}
+                className="px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-lg transition-colors disabled:opacity-50"
+              >
+                {savingEvidence ? 'Saving...' : 'Save Evidence'}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Existing Evidence List */}
+        {evidenceList.length === 0 ? (
+          <div className="bg-slate-950/40 p-4 rounded-xl border border-slate-800/60 text-xs text-slate-500 text-center">
+            No evidence items attached yet. Record a screenshot or live screen-share session after carry meetup.
+          </div>
+        ) : (
+          <div className="space-y-2.5">
+            {evidenceList.map((ev: any) => (
+              <div key={ev.id} className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 font-semibold text-white">
+                    <span className="capitalize px-2 py-0.5 rounded bg-slate-900 text-slate-300 font-mono text-[10px]">
+                      {ev.evidenceType.replace(/_/g, ' ')}
+                    </span>
+                    <a
+                      href={ev.mediaUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-amber-400 hover:underline truncate max-w-xs block font-mono"
+                    >
+                      {ev.mediaUrl}
+                    </a>
+                  </div>
+                  {ev.notes && <p className="text-slate-400 italic text-[11px]">"{ev.notes}"</p>}
+                </div>
+
+                <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+                  <button
+                    onClick={() => handleToggleApproval(ev.id, ev.staffApprovedPublic)}
+                    disabled={!order.consentPublicProofs}
+                    className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors border ${
+                      ev.staffApprovedPublic
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/30'
+                        : order.consentPublicProofs
+                        ? 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
+                        : 'bg-slate-900/50 text-slate-600 border-slate-800 cursor-not-allowed'
+                    }`}
+                  >
+                    {ev.staffApprovedPublic ? '✓ Public on Proofs Wall' : 'Approve for Public'}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* IMMUTABLE AUDIT TRAIL */}

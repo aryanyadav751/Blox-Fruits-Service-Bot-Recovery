@@ -66,9 +66,66 @@ export interface PublicOrder {
   depositM: string;
   remainingM: string;
   customerNote?: string | null;
+  consentPublicProofs?: boolean;
   createdAt: string;
   updatedAt: string;
   items: OrderItem[];
   payments: OrderPayment[];
   timeline: OrderTimelineEvent[];
+}
+
+export type EnquiryStatus = 'pending' | 'in_progress' | 'resolved';
+export type EnquirySource = 'website' | 'discord' | 'direct';
+
+export interface Enquiry {
+  id: string;
+  source: EnquirySource;
+  customerName?: string | null;
+  robloxUsername: string;
+  discordTag?: string | null;
+  orderCodeOrId?: string | null;
+  subject: string;
+  message: string;
+  status: EnquiryStatus;
+  staffNotes?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CreateEnquiryPayload = Omit<Enquiry, 'id' | 'createdAt' | 'updatedAt' | 'staffNotes'> & {
+  staffNotes?: string | null;
+};
+
+export type EvidenceType = 'screenshot' | 'video_link' | 'screen_share_session';
+
+export interface ServiceEvidence {
+  id: string;
+  orderId: string;
+  orderCode?: string;
+  serviceId: string;
+  serviceName?: string;
+  serviceCategory?: string;
+  robloxUsername?: string;
+  robloxUsernameMasked?: string;
+  evidenceType: EvidenceType;
+  mediaUrl: string;
+  notes?: string | null;
+  customerConsentPublic: boolean;
+  staffApprovedPublic: boolean;
+  isOngoing: boolean;
+  isCompleted: boolean;
+  createdAt: string;
+  reviewedAt?: string | null;
+  reviewedBy?: string | null;
+}
+
+export interface OngoingServiceItem {
+  orderCode: string;
+  serviceName: string;
+  serviceCategory: string;
+  robloxUsernameDisplay: string;
+  status: OrderStatus;
+  paymentType: string;
+  updatedAt: string;
+  hasLiveScreenShare?: boolean;
 }

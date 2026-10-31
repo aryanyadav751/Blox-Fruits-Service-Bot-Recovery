@@ -39,6 +39,7 @@ export const orders = pgTable('orders', {
   remainingHundredths: integer('remaining_hundredths').notNull(),
   customerNote: text('customer_note'),
   staffNotes: text('staff_notes'),
+  consentPublicProofs: boolean('consent_public_proofs').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
@@ -72,6 +73,37 @@ export const payments = pgTable('payments', {
   recordedAt: timestamp('recorded_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const enquiries = pgTable('enquiries', {
+  id: text('id').primaryKey(),
+  source: text('source').notNull().default('website'), // 'website' | 'discord' | 'direct'
+  customerName: text('customer_name'),
+  robloxUsername: text('roblox_username').notNull(),
+  discordTag: text('discord_tag'),
+  orderCodeOrId: text('order_code_or_id'),
+  subject: text('subject').notNull(),
+  message: text('message').notNull(),
+  status: text('status').notNull().default('pending'), // 'pending' | 'in_progress' | 'resolved'
+  staffNotes: text('staff_notes'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const serviceEvidence = pgTable('service_evidence', {
+  id: text('id').primaryKey(),
+  orderId: text('order_id').notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  serviceId: text('service_id').notNull().references(() => services.id),
+  evidenceType: text('evidence_type').notNull(), // 'screenshot' | 'video_link' | 'screen_share_session'
+  mediaUrl: text('media_url').notNull(),
+  notes: text('notes'),
+  customerConsentPublic: boolean('customer_consent_public').notNull().default(false),
+  staffApprovedPublic: boolean('staff_approved_public').notNull().default(false),
+  isOngoing: boolean('is_ongoing').notNull().default(false),
+  isCompleted: boolean('is_completed').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+  reviewedBy: text('reviewed_by'),
+});
+
 // Relations
 export const ordersRelations = relations(orders, ({ one, many }) => ({
   service: one(services, {
@@ -81,6 +113,7 @@ export const ordersRelations = relations(orders, ({ one, many }) => ({
   items: many(orderItems),
   auditLogs: many(orderAudit),
   payments: many(payments),
+  evidence: many(serviceEvidence),
 }));
 
 export const orderItemsRelations = relations(orderItems, ({ one }) => ({
@@ -101,5 +134,16 @@ export const paymentsRelations = relations(payments, ({ one }) => ({
   order: one(orders, {
     fields: [payments.orderId],
     references: [orders.id],
+  }),
+}));
+
+export const serviceEvidenceRelations = relations(serviceEvidence, ({ one }) => ({
+  order: one(orders, {
+    fields: [serviceEvidence.orderId],
+    references: [orders.id],
+  }),
+  service: one(services, {
+    fields: [serviceEvidence.serviceId],
+    references: [services.id],
   }),
 }));

@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { INITIAL_SERVICES, ServiceSeedItem } from './seed-data.ts';
 import { toHundredths } from '../lib/calculator.ts';
+import { ensureDatabaseConfigured } from './neon.ts';
 
 export interface ServiceRecord {
   id: string;
@@ -43,6 +44,7 @@ export interface OrderRecord {
   remainingHundredths: number;
   customerNote?: string | null;
   staffNotes?: string | null;
+  consentPublicProofs?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -80,12 +82,45 @@ export interface PaymentRecord {
   recordedAt: string;
 }
 
+export interface EnquiryRecord {
+  id: string;
+  source: 'website' | 'discord' | 'direct';
+  customerName?: string | null;
+  robloxUsername: string;
+  discordTag?: string | null;
+  orderCodeOrId?: string | null;
+  subject: string;
+  message: string;
+  status: 'pending' | 'in_progress' | 'resolved';
+  staffNotes?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EvidenceRecord {
+  id: string;
+  orderId: string;
+  serviceId: string;
+  evidenceType: 'screenshot' | 'video_link' | 'screen_share_session';
+  mediaUrl: string;
+  notes?: string | null;
+  customerConsentPublic: boolean;
+  staffApprovedPublic: boolean;
+  isOngoing: boolean;
+  isCompleted: boolean;
+  createdAt: string;
+  reviewedAt?: string | null;
+  reviewedBy?: string | null;
+}
+
 interface DatabaseState {
   services: ServiceRecord[];
   orders: OrderRecord[];
   orderItems: OrderItemRecord[];
   orderAudit: OrderAuditRecord[];
   payments: PaymentRecord[];
+  enquiries: EnquiryRecord[];
+  evidence: EvidenceRecord[];
   counter: number;
 }
 
@@ -105,6 +140,8 @@ function loadState(): DatabaseState {
       const raw = fs.readFileSync(DATA_FILE, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.services)) {
+        if (!Array.isArray(parsed.enquiries)) parsed.enquiries = [];
+        if (!Array.isArray(parsed.evidence)) parsed.evidence = [];
         return parsed;
       }
     } catch (e) {
@@ -135,6 +172,8 @@ function loadState(): DatabaseState {
     orderItems: [],
     orderAudit: [],
     payments: [],
+    enquiries: [],
+    evidence: [],
     counter: 1040,
   };
 
@@ -152,6 +191,7 @@ function saveState(state: DatabaseState) {
 // Memory cache + write-through
 let stateCache: DatabaseState | null = null;
 function getState(): DatabaseState {
+  ensureDatabaseConfigured();
   if (!stateCache) {
     stateCache = loadState();
   }
@@ -243,6 +283,7 @@ export const dbRepository = {
 
     const newOrder: OrderRecord = {
       ...order,
+      consentPublicProofs: Boolean(order.consentPublicProofs),
       id: orderId,
       createdAt: now,
       updatedAt: now,
@@ -423,6 +464,191 @@ export const dbRepository = {
 
   getOrderPayments(orderId: string): PaymentRecord[] {
     return getState().payments.filter(p => p.orderId === orderId);
+  },
+
+  // Enquiries (Customer Service)
+  createEnquiry(data: Omit<EnquiryRecord, 'id' | 'createdAt' | 'updatedAt'>): EnquiryRecord {
+    const s = getState();
+    const id = `enq-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const now = new Date().toISOString();
+    const newEnquiry: EnquiryRecord = {
+      ...data,
+      id,
+      status: data.status || 'pending',
+      createdAt: now,
+      updatedAt: now,
+    };
+    s.enquiries.push(newEnquiry);
+    commitState();
+    return newEnquiry;
+  },
+
+  listEnquiries(filters?: { status?: string; search?: string }): EnquiryRecord[] {
+    const s = getState();
+    let result = [...s.enquiries];
+
+    if (filters?.status && filters.status !== 'all') {
+      result = result.filter(e => e.status === filters.status);
+    }
+
+    if (filters?.search) {
+      const q = filters.search.toLowerCase().trim();
+      result = result.filter(e =>
+        e.robloxUsername.toLowerCase().includes(q) ||
+        (e.orderCodeOrId && e.orderCodeOrId.toLowerCase().includes(q)) ||
+        (e.discordTag && e.discordTag.toLowerCase().includes(q)) ||
+        e.subject.toLowerCase().includes(q)
+      );
+    }
+
+    // Newest first
+    result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return result;
+  },
+
+  getEnquiryById(id: string): EnquiryRecord | undefined {
+    return getState().enquiries.find(e => e.id === id);
+  },
+
+  updateEnquiryStatus(
+    id: string,
+    status: 'pending' | 'in_progress' | 'resolved',
+    staffNotes?: string
+  ): EnquiryRecord | null {
+    const s = getState();
+    const enquiry = s.enquiries.find(e => e.id === id);
+    if (!enquiry) return null;
+
+    enquiry.status = status;
+    if (staffNotes !== undefined) {
+      enquiry.staffNotes = staffNotes;
+    }
+    enquiry.updatedAt = new Date().toISOString();
+    commitState();
+    return enquiry;
+  },
+
+  // Service Evidence & Proofs
+  createEvidence(data: Omit<EvidenceRecord, 'id' | 'createdAt'>): EvidenceRecord {
+    const s = getState();
+    const id = `evi-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const now = new Date().toISOString();
+    const newEvidence: EvidenceRecord = {
+      ...data,
+      id,
+      createdAt: now,
+    };
+    s.evidence.push(newEvidence);
+    commitState();
+    return newEvidence;
+  },
+
+  getEvidenceByOrderId(orderId: string): EvidenceRecord[] {
+    return getState().evidence.filter(e => e.orderId === orderId);
+  },
+
+  listEvidence(filters?: { isCompleted?: boolean; staffApprovedPublic?: boolean }): EvidenceRecord[] {
+    const s = getState();
+    let result = [...s.evidence];
+    if (filters?.isCompleted !== undefined) {
+      result = result.filter(e => e.isCompleted === filters.isCompleted);
+    }
+    if (filters?.staffApprovedPublic !== undefined) {
+      result = result.filter(e => e.staffApprovedPublic === filters.staffApprovedPublic);
+    }
+    result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return result;
+  },
+
+  updateEvidenceApproval(
+    id: string,
+    staffApprovedPublic: boolean,
+    reviewedBy: string
+  ): EvidenceRecord | null {
+    const s = getState();
+    const ev = s.evidence.find(e => e.id === id);
+    if (!ev) return null;
+
+    ev.staffApprovedPublic = staffApprovedPublic;
+    ev.reviewedAt = new Date().toISOString();
+    ev.reviewedBy = reviewedBy;
+    commitState();
+    return ev;
+  },
+
+  /**
+   * Public Proofs:
+   * STRICT REQUIREMENT: Only returns evidence where customerConsentPublic === true
+   * AND staffApprovedPublic === true AND isCompleted === true.
+   */
+  getPublicProofs() {
+    const s = getState();
+    const approved = s.evidence.filter(
+      e => e.customerConsentPublic === true && e.staffApprovedPublic === true && e.isCompleted === true
+    );
+
+    return approved.map(ev => {
+      const order = s.orders.find(o => o.id === ev.orderId);
+      const service = s.services.find(svc => svc.id === ev.serviceId);
+
+      // Mask username if needed or show full username if customer explicitly consented
+      const fullUsername = order ? order.robloxUsername : 'BloxPlayer';
+      const usernameDisplay = ev.customerConsentPublic ? fullUsername : `${fullUsername.slice(0, 2)}***`;
+
+      return {
+        id: ev.id,
+        orderId: ev.orderId,
+        orderCode: order ? order.orderCode : 'BFS-XXXX',
+        serviceId: ev.serviceId,
+        serviceName: service ? service.name : 'Blox Fruit Service',
+        serviceCategory: service ? service.category : 'Carries',
+        robloxUsername: usernameDisplay,
+        evidenceType: ev.evidenceType,
+        mediaUrl: ev.mediaUrl,
+        notes: ev.notes,
+        customerConsentPublic: ev.customerConsentPublic,
+        staffApprovedPublic: ev.staffApprovedPublic,
+        createdAt: ev.createdAt,
+        reviewedAt: ev.reviewedAt,
+      };
+    });
+  },
+
+  /**
+   * Ongoing Services (Active carries queue):
+   * Transparent live view of orders currently accepted, deposit_received, or in_progress.
+   * STRICT REQUIREMENT: Anonymizes / masks usernames UNLESS customer consented to public display.
+   */
+  getOngoingCarries() {
+    const s = getState();
+    const activeOrders = s.orders.filter(o => 
+      ['accepted', 'deposit_received', 'in_progress'].includes(o.status)
+    );
+
+    return activeOrders.map(o => {
+      const service = s.services.find(svc => svc.id === o.serviceId);
+      const evidence = s.evidence.filter(e => e.orderId === o.id);
+      const hasLiveScreenShare = evidence.some(e => e.evidenceType === 'screen_share_session');
+
+      // Privacy masking: Only display full username if customer consented
+      let usernameDisplay = 'Client_***';
+      if (o.consentPublicProofs) {
+        usernameDisplay = o.robloxUsername;
+      } else if (o.robloxUsername.length > 3) {
+        usernameDisplay = `${o.robloxUsername.slice(0, 2)}***${o.robloxUsername.slice(-1)}`;
+      }
+
+      return {
+        orderCode: o.orderCode,
+        serviceName: service ? service.name : 'Blox Fruit Carry',
+        serviceCategory: service ? service.category : 'General',
+        robloxUsernameDisplay: usernameDisplay,
+        status: o.status,
+        paymentType: o.paymentType,
+        updatedAt: o.updatedAt,
+        hasLiveScreenShare,
+      };
+    });
   },
 
   // Helper to reset to seed for test suite
