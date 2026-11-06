@@ -37,6 +37,7 @@ export const CatalogPage: React.FC<CatalogPageProps> = ({
       const q = searchQuery.toLowerCase().trim();
       const matchesSearch = !q || 
         service.name.toLowerCase().includes(q) ||
+        service.category.toLowerCase().includes(q) ||
         service.description.toLowerCase().includes(q) ||
         (service.prerequisites && service.prerequisites.toLowerCase().includes(q));
 
@@ -69,9 +70,19 @@ export const CatalogPage: React.FC<CatalogPageProps> = ({
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search trials, bosses, swords, raids..."
-            className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
+            placeholder="Search by name, category, boss, trial, sword or raid..."
+            className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-9 pr-9 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
           />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors"
+              title="Clear search"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
 
         {/* Total count badge */}

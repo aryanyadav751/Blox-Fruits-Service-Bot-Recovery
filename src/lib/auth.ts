@@ -76,7 +76,15 @@ export function createStaffSessionToken(staffId = 'staff_member'): string {
 export function verifyStaffSessionToken(token: string): SessionPayload | null {
   if (!token || typeof token !== 'string') return null;
 
-  const parts = token.split('.');
+  let cleanToken = token.trim();
+  try {
+    cleanToken = decodeURIComponent(cleanToken);
+  } catch {}
+  if (cleanToken.startsWith('"') && cleanToken.endsWith('"')) {
+    cleanToken = cleanToken.slice(1, -1).trim();
+  }
+
+  const parts = cleanToken.split('.');
   if (parts.length !== 2) return null;
 
   const [payloadB64, providedSig] = parts;

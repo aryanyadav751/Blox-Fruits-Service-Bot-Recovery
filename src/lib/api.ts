@@ -31,6 +31,54 @@ export interface CreateOrderResponse {
   error?: string;
 }
 
+// Module-level token cache to ensure resilience across async boundaries
+let inMemoryStaffToken: string | null = null;
+
+export function getStaffToken(): string | null {
+  if (inMemoryStaffToken && inMemoryStaffToken !== 'null' && inMemoryStaffToken !== 'undefined') {
+    return inMemoryStaffToken;
+  }
+  try {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('bfs_staff_token') || sessionStorage.getItem('bfs_staff_token');
+      if (stored && stored !== 'null' && stored !== 'undefined') {
+        inMemoryStaffToken = stored;
+        return stored;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+export function setStaffToken(token: string): void {
+  inMemoryStaffToken = token;
+  try {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('bfs_staff_token', token);
+      sessionStorage.setItem('bfs_staff_token', token);
+    }
+  } catch {}
+}
+
+export function clearStaffToken(): void {
+  inMemoryStaffToken = null;
+  try {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('bfs_staff_token');
+      sessionStorage.removeItem('bfs_staff_token');
+    }
+  } catch {}
+}
+
+export function getAdminHeaders(additional: Record<string, string> = {}): Record<string, string> {
+  const headers: Record<string, string> = { ...additional };
+  const token = getStaffToken();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
 export const api = {
   async getServices(): Promise<Service[]> {
     const res = await fetch('/api/services');
@@ -112,8 +160,24 @@ export const api = {
     return data.activeCarries;
   },
 
-  // --- ADMIN AUTH (HTTP-ONLY COOKIES FOR SECURITY) ---
-  async adminLogin(password: string): Promise<{ success: boolean; role: string }> {
+  // --- ADMIN AUTH (DUAL BEARER TOKEN + HTTP-ONLY COOKIE) ---
+  getStaffToken(): string | null {
+    return getStaffToken();
+  },
+
+  setStaffToken(token: string): void {
+    setStaffToken(token);
+  },
+
+  clearStaffToken(): void {
+    clearStaffToken();
+  },
+
+  getAdminHeaders(additional: Record<string, string> = {}): Record<string, string> {
+    return getAdminHeaders(additional);
+  },
+
+  async adminLogin(password: string): Promise<{ success: boolean; role: string; token?: string }> {
     const res = await fetch('/api/admin/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -124,6 +188,9 @@ export const api = {
     if (!res.ok || !data.success) {
       throw new Error(data.error || 'Login failed');
     }
+    if (data.token) {
+      setStaffToken(data.token);
+    }
     return data;
   },
 
@@ -132,10 +199,12 @@ export const api = {
       await fetch('/api/admin/logout', {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       });
     } catch (e) {
       console.warn('Logout request failed:', e);
+    } finally {
+      clearStaffToken();
     }
   },
 
@@ -143,9 +212,14 @@ export const api = {
     try {
       const res = await fetch('/api/admin/me', {
         credentials: 'include',
+        headers: getAdminHeaders(),
       });
       const data = await res.json();
-      return Boolean(res.ok && data.success);
+      if (res.ok && data.success) {
+        return true;
+      }
+      clearStaffToken();
+      return false;
     } catch {
       return false;
     }
@@ -159,6 +233,7 @@ export const api = {
 
     const res = await fetch(`/api/admin/orders?${params.toString()}`, {
       credentials: 'include',
+      headers: getAdminHeaders(),
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
@@ -170,6 +245,7 @@ export const api = {
   async adminGetOrder(id: string): Promise<any> {
     const res = await fetch(`/api/admin/orders/${encodeURIComponent(id)}`, {
       credentials: 'include',
+      headers: getAdminHeaders(),
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
@@ -182,7 +258,7 @@ export const api = {
     const res = await fetch(`/api/admin/orders/${encodeURIComponent(id)}/status`, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ status, note }),
     });
     const data = await res.json();
@@ -195,7 +271,7 @@ export const api = {
     const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(itemId)}`, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ agreedValueM, verified }),
     });
     const data = await res.json();
@@ -208,7 +284,7 @@ export const api = {
     const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/payments`, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ kind, amountM, itemsJson, staffName }),
     });
     const data = await res.json();
@@ -221,7 +297,7 @@ export const api = {
     const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/notes`, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ staffNotes }),
     });
     const data = await res.json();
@@ -238,6 +314,7 @@ export const api = {
 
     const res = await fetch(`/api/admin/enquiries?${params.toString()}`, {
       credentials: 'include',
+      headers: getAdminHeaders(),
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
@@ -250,7 +327,7 @@ export const api = {
     const res = await fetch('/api/admin/enquiries', {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
     });
     const data = await res.json();
@@ -264,7 +341,7 @@ export const api = {
     const res = await fetch(`/api/admin/enquiries/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ status, staffNotes }),
     });
     const data = await res.json();
@@ -278,6 +355,7 @@ export const api = {
   async adminGetOrderEvidence(orderId: string): Promise<ServiceEvidence[]> {
     const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/evidence`, {
       credentials: 'include',
+      headers: getAdminHeaders(),
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
@@ -298,7 +376,7 @@ export const api = {
     const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/evidence`, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
     });
     const data = await res.json();
@@ -312,7 +390,7 @@ export const api = {
     const res = await fetch(`/api/admin/evidence/${encodeURIComponent(evidenceId)}/approval`, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ staffApprovedPublic }),
     });
     const data = await res.json();
@@ -322,10 +400,11 @@ export const api = {
     return data.evidence;
   },
 
-  // --- CATALOG CRUD ---
+  // --- CATALOG CRUD (CHANGE CATALOGUE) ---
   async adminGetCatalog(): Promise<Service[]> {
     const res = await fetch('/api/admin/catalog', {
       credentials: 'include',
+      headers: getAdminHeaders(),
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
@@ -338,7 +417,7 @@ export const api = {
     const res = await fetch('/api/admin/catalog', {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
     });
     const data = await res.json();
@@ -352,7 +431,7 @@ export const api = {
     const res = await fetch(`/api/admin/catalog/${encodeURIComponent(id)}`, {
       method: 'PUT',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(updates),
     });
     const data = await res.json();
@@ -366,6 +445,7 @@ export const api = {
     const res = await fetch(`/api/admin/catalog/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       credentials: 'include',
+      headers: getAdminHeaders(),
     });
     const data = await res.json();
     if (!res.ok || !data.success) {

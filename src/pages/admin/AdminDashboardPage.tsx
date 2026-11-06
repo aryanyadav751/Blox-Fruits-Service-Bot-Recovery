@@ -19,21 +19,34 @@ import {
   Image as ImageIcon,
   CheckCircle2,
   X,
-  HelpCircle
+  HelpCircle,
+  Edit2,
+  Trash2,
+  Eye,
+  EyeOff,
+  Save,
+  Tag,
+  ToggleLeft,
+  ToggleRight,
+  Sparkles
 } from 'lucide-react';
 import { api } from '../../lib/api.ts';
-import { Enquiry, EnquiryStatus } from '../../types/index.ts';
+import { Enquiry, EnquiryStatus, Service } from '../../types/index.ts';
 
 interface AdminDashboardPageProps {
   onNavigate: (path: string) => void;
   onLogout: () => void;
+  initialTab?: 'orders' | 'support' | 'proofs' | 'catalog';
+  onServiceChange?: () => void;
 }
 
 export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ 
   onNavigate, 
-  onLogout 
+  onLogout,
+  initialTab = 'orders',
+  onServiceChange,
 }) => {
-  const [activeTab, setActiveTab] = useState<'orders' | 'support' | 'proofs'>('orders');
+  const [activeTab, setActiveTab] = useState<'orders' | 'support' | 'proofs' | 'catalog'>(initialTab);
 
   // --- ORDERS STATE ---
   const [orders, setOrders] = useState<any[]>([]);
@@ -41,6 +54,30 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
   const [orderError, setOrderError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState('all');
   const [orderSearch, setOrderSearch] = useState('');
+
+  // --- CATALOGUE STATE ---
+  const [catalog, setCatalog] = useState<Service[]>([]);
+  const [loadingCatalog, setLoadingCatalog] = useState(false);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [catalogCategoryFilter, setCatalogCategoryFilter] = useState('all');
+  const [catalogSearch, setCatalogSearch] = useState('');
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [editingItem, setEditingItem] = useState<Service | null>(null);
+  const [deleteConfirmItem, setDeleteConfirmItem] = useState<Service | null>(null);
+  const [savingItem, setSavingItem] = useState(false);
+  const [itemFormError, setItemFormError] = useState<string | null>(null);
+
+  const [itemForm, setItemForm] = useState({
+    category: 'Fruits',
+    customCategory: '',
+    name: '',
+    description: '',
+    priceM: '',
+    prerequisites: '',
+    exclusions: '',
+    isPublished: true,
+    needsConfirmation: false,
+  });
 
   // --- SUPPORT INBOX STATE ---
   const [enquiries, setEnquiries] = useState<Enquiry[]>([]);
@@ -105,8 +142,23 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     }
   };
 
+  // Load catalogue items
+  const loadCatalog = async () => {
+    setLoadingCatalog(true);
+    setCatalogError(null);
+    try {
+      const data = await api.adminGetCatalog();
+      setCatalog(data);
+    } catch (err: any) {
+      setCatalogError(err.message || 'Failed to fetch catalog');
+    } finally {
+      setLoadingCatalog(false);
+    }
+  };
+
   useEffect(() => {
     loadOrders();
+    loadCatalog();
   }, [statusFilter]);
 
   useEffect(() => {
@@ -114,6 +166,8 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
       loadEnquiries();
     } else if (activeTab === 'proofs') {
       loadProofs();
+    } else if (activeTab === 'catalog') {
+      loadCatalog();
     }
   }, [activeTab, enquiryStatusFilter]);
 
@@ -125,6 +179,10 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
   const handleEnquirySearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     loadEnquiries();
+  };
+
+  const handleCatalogSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
   };
 
   const handleUpdateEnquiryStatus = async (id: string, newStatus: EnquiryStatus) => {
@@ -166,6 +224,135 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     }
   };
 
+  // --- CATALOGUE ACTION HANDLERS ---
+  const handleOpenAddModal = () => {
+    setItemFormError(null);
+    setEditingItem(null);
+    setItemForm({
+      category: 'Fruits',
+      customCategory: '',
+      name: '',
+      description: '',
+      priceM: '',
+      prerequisites: '',
+      exclusions: '',
+      isPublished: true,
+      needsConfirmation: false,
+    });
+    setShowAddModal(true);
+  };
+
+  const handleOpenEditModal = (item: Service) => {
+    setItemFormError(null);
+    setEditingItem(item);
+    const standardCategories = ['Fruits', 'Gamepasses', 'Trials', 'Raids', 'Sea Events', 'Bosses', 'Dungeons', 'Currency', 'Material Drops', 'Accessories', 'Swords', 'Quests'];
+    const isCustom = !standardCategories.includes(item.category);
+
+    setItemForm({
+      category: isCustom ? 'Custom' : item.category,
+      customCategory: isCustom ? item.category : '',
+      name: item.name,
+      description: item.description || '',
+      priceM: item.priceM,
+      prerequisites: item.prerequisites || '',
+      exclusions: item.exclusions || '',
+      isPublished: Boolean(item.isPublished),
+      needsConfirmation: Boolean(item.needsConfirmation),
+    });
+    setShowAddModal(true);
+  };
+
+  const handleSaveItem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setItemFormError(null);
+
+    const finalCategory = itemForm.category === 'Custom' 
+      ? itemForm.customCategory.trim() 
+      : itemForm.category.trim();
+
+    if (!finalCategory) {
+      setItemFormError('Please select or specify a category.');
+      return;
+    }
+    if (!itemForm.name.trim()) {
+      setItemFormError('Item name is required.');
+      return;
+    }
+    const valNum = parseFloat(itemForm.priceM);
+    if (isNaN(valNum) || valNum < 0) {
+      setItemFormError('Trade Value (in M) must be a non-negative number.');
+      return;
+    }
+
+    setSavingItem(true);
+    try {
+      if (editingItem) {
+        await api.adminUpdateService(editingItem.id, {
+          category: finalCategory,
+          name: itemForm.name.trim(),
+          description: itemForm.description.trim(),
+          priceM: itemForm.priceM as any,
+          prerequisites: itemForm.prerequisites.trim() || null,
+          exclusions: itemForm.exclusions.trim() || null,
+          isPublished: itemForm.isPublished,
+          needsConfirmation: itemForm.needsConfirmation,
+        });
+      } else {
+        await api.adminCreateService({
+          category: finalCategory,
+          name: itemForm.name.trim(),
+          description: itemForm.description.trim(),
+          priceM: itemForm.priceM as any,
+          prerequisites: itemForm.prerequisites.trim() || null,
+          exclusions: itemForm.exclusions.trim() || null,
+          isPublished: itemForm.isPublished,
+          needsConfirmation: itemForm.needsConfirmation,
+        });
+      }
+
+      setShowAddModal(false);
+      setEditingItem(null);
+      await loadCatalog();
+      onServiceChange?.();
+    } catch (err: any) {
+      setItemFormError(err.message || 'Failed to save catalogue item.');
+    } finally {
+      setSavingItem(false);
+    }
+  };
+
+  const handleTogglePublish = async (item: Service) => {
+    try {
+      await api.adminUpdateService(item.id, { isPublished: !item.isPublished });
+      await loadCatalog();
+      onServiceChange?.();
+    } catch (err: any) {
+      alert(err.message || 'Failed to update publication status');
+    }
+  };
+
+  const handleToggleNeedsConfirmation = async (item: Service) => {
+    try {
+      await api.adminUpdateService(item.id, { needsConfirmation: !item.needsConfirmation });
+      await loadCatalog();
+      onServiceChange?.();
+    } catch (err: any) {
+      alert(err.message || 'Failed to update confirmation status');
+    }
+  };
+
+  const handleDeleteItem = async () => {
+    if (!deleteConfirmItem) return;
+    try {
+      await api.adminDeleteService(deleteConfirmItem.id);
+      setDeleteConfirmItem(null);
+      await loadCatalog();
+      onServiceChange?.();
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete catalogue item');
+    }
+  };
+
   // Metrics
   const totalOrders = orders.length;
   const pendingOrders = orders.filter(o => o.status === 'pending_review').length;
@@ -188,11 +375,15 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
 
         <div className="flex items-center gap-2.5 flex-wrap">
           <button
-            onClick={() => onNavigate('/admin/catalog')}
-            className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs text-slate-300 hover:text-white rounded-lg transition-colors flex items-center gap-1.5"
+            onClick={() => setActiveTab('catalog')}
+            className={`px-3 py-1.5 border text-xs rounded-lg transition-colors flex items-center gap-1.5 ${
+              activeTab === 'catalog'
+                ? 'bg-amber-400 text-slate-950 font-bold border-amber-400 shadow-sm'
+                : 'bg-slate-900 hover:bg-slate-800 border-slate-800 text-slate-300 hover:text-white'
+            }`}
           >
-            <Layers className="w-3.5 h-3.5 text-amber-400" />
-            <span>Manage Catalog</span>
+            <Layers className="w-3.5 h-3.5" />
+            <span>Change Catalogue</span>
           </button>
 
           <button
@@ -229,10 +420,10 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
       </div>
 
       {/* Navigation Tabs */}
-      <div className="flex border-b border-slate-800 gap-2">
+      <div className="flex border-b border-slate-800 gap-2 overflow-x-auto">
         <button
           onClick={() => setActiveTab('orders')}
-          className={`pb-3 px-4 text-xs font-bold border-b-2 transition-all flex items-center gap-2 ${
+          className={`pb-3 px-4 text-xs font-bold border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${
             activeTab === 'orders'
               ? 'border-amber-400 text-amber-400'
               : 'border-transparent text-slate-400 hover:text-slate-200'
@@ -245,8 +436,23 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
         </button>
 
         <button
+          onClick={() => setActiveTab('catalog')}
+          className={`pb-3 px-4 text-xs font-bold border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${
+            activeTab === 'catalog'
+              ? 'border-amber-400 text-amber-400'
+              : 'border-transparent text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <Layers className="w-3.5 h-3.5" />
+          <span>Change Catalogue</span>
+          <span className="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] text-slate-300 font-mono">
+            {catalog.length}
+          </span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('support')}
-          className={`pb-3 px-4 text-xs font-bold border-b-2 transition-all flex items-center gap-2 ${
+          className={`pb-3 px-4 text-xs font-bold border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${
             activeTab === 'support'
               ? 'border-amber-400 text-amber-400'
               : 'border-transparent text-slate-400 hover:text-slate-200'
@@ -263,7 +469,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
 
         <button
           onClick={() => setActiveTab('proofs')}
-          className={`pb-3 px-4 text-xs font-bold border-b-2 transition-all flex items-center gap-2 ${
+          className={`pb-3 px-4 text-xs font-bold border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${
             activeTab === 'proofs'
               ? 'border-amber-400 text-amber-400'
               : 'border-transparent text-slate-400 hover:text-slate-200'
@@ -319,8 +525,20 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
           </div>
 
           {orderError && (
-            <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-300">
-              {orderError}
+            <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 rounded-2xl text-xs text-rose-300 flex items-center justify-between gap-3 shadow-sm">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{orderError}</span>
+              </div>
+              {orderError.toLowerCase().includes('unauthorized') && (
+                <button
+                  type="button"
+                  onClick={() => onNavigate('/admin/login')}
+                  className="px-3 py-1 bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold rounded-lg text-xs transition-colors shrink-0 shadow-sm"
+                >
+                  Sign In Again
+                </button>
+              )}
             </div>
           )}
 
@@ -579,6 +797,311 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
         </div>
       )}
 
+      {/* TAB 4: CHANGE CATALOGUE */}
+      {activeTab === 'catalog' && (
+        <div className="space-y-6">
+          {/* Header & Actions */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2">
+            <div>
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <Layers className="w-4 h-4 text-amber-400" />
+                <span>Live Catalogue & Trade Valuation Management</span>
+              </h3>
+              <p className="text-xs text-slate-400">
+                Manage all published services, in-game fruits, gamepasses and trade values (in M). Changes save permanently to Neon PostgreSQL.
+              </p>
+            </div>
+            <button
+              onClick={handleOpenAddModal}
+              className="px-4 py-2 bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs rounded-xl transition-colors flex items-center gap-1.5 shadow-sm active:scale-95 shrink-0 self-start sm:self-auto"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Add Catalogue Item</span>
+            </button>
+          </div>
+
+          {/* Search & Category Filter Bar */}
+          <div className="space-y-3">
+            <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between">
+              <form onSubmit={handleCatalogSearchSubmit} className="relative flex-1 max-w-md">
+                <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="text"
+                  value={catalogSearch}
+                  onChange={(e) => setCatalogSearch(e.target.value)}
+                  placeholder="Search by name, category, boss, trial, sword, or raid..."
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-9 pr-9 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
+                />
+                {catalogSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setCatalogSearch('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors p-0.5"
+                    title="Clear search"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </form>
+
+              {catalog.length > 0 && (
+                <div className="text-xs text-slate-400 shrink-0 self-start sm:self-auto flex items-center gap-1.5 font-medium">
+                  <span>Showing <strong className="text-amber-400 font-mono">{
+                    catalog.filter((item) => {
+                      const matchesCat = catalogCategoryFilter === 'all' || item.category.toLowerCase() === catalogCategoryFilter.toLowerCase();
+                      const term = catalogSearch.toLowerCase().trim();
+                      const matchesSearch = !term || 
+                        item.name.toLowerCase().includes(term) || 
+                        item.category.toLowerCase().includes(term) ||
+                        (item.description && item.description.toLowerCase().includes(term));
+                      return matchesCat && matchesSearch;
+                    }).length
+                  }</strong> of <span className="font-mono">{catalog.length}</span> items</span>
+                  {(catalogSearch || catalogCategoryFilter !== 'all') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCatalogSearch('');
+                        setCatalogCategoryFilter('all');
+                      }}
+                      className="ml-1 text-[11px] text-amber-400/90 hover:text-amber-300 underline"
+                    >
+                      Reset filters
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
+              {[
+                { id: 'all', label: 'All Items' },
+                { id: 'Fruits', label: '🍎 Fruits' },
+                { id: 'Gamepasses', label: '🎫 Gamepasses' },
+                { id: 'Trials', label: '⚔️ Trials' },
+                { id: 'Swords', label: '🗡️ Swords' },
+                { id: 'Accessories', label: '🛡️ Accessories' },
+                { id: 'Quests', label: '📜 Quests' },
+                { id: 'Sea Events', label: '🌊 Sea Events' },
+                { id: 'Bosses', label: '👑 Bosses' },
+                { id: 'Raids', label: '⚡ Raids' },
+                { id: 'Dungeons', label: '🏰 Dungeons' },
+                { id: 'Currency', label: '💰 Currency' },
+                { id: 'Material Drops', label: '📦 Materials' },
+              ].map((cat) => (
+                <button
+                  key={cat.id}
+                  onClick={() => setCatalogCategoryFilter(cat.id)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap transition-colors ${
+                    catalogCategoryFilter === cat.id
+                      ? 'bg-amber-400 text-slate-950 font-semibold shadow-sm'
+                      : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  {cat.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {catalogError && (
+            <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-300 flex items-center justify-between">
+              <span>{catalogError}</span>
+              <button
+                onClick={loadCatalog}
+                className="px-2.5 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 rounded-lg text-xs font-semibold"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
+          {/* Catalog Items Grid */}
+          {loadingCatalog ? (
+            <div className="py-20 text-center text-slate-500 text-sm space-y-2">
+              <div className="w-6 h-6 border-2 border-amber-400 border-t-transparent rounded-full animate-spin mx-auto" />
+              <div>Loading database catalogue...</div>
+            </div>
+          ) : (() => {
+            const filtered = catalog.filter((item) => {
+              const matchesCat = catalogCategoryFilter === 'all' || item.category.toLowerCase() === catalogCategoryFilter.toLowerCase();
+              const term = catalogSearch.toLowerCase().trim();
+              const matchesSearch = !term || 
+                item.name.toLowerCase().includes(term) || 
+                item.category.toLowerCase().includes(term) ||
+                (item.description && item.description.toLowerCase().includes(term));
+              return matchesCat && matchesSearch;
+            });
+
+            if (filtered.length === 0) {
+              return (
+                <div className="py-16 text-center bg-slate-900/30 border border-slate-800 rounded-2xl p-8 space-y-3">
+                  <div className="text-white font-semibold text-sm">No items found</div>
+                  <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                    {catalogSearch || catalogCategoryFilter !== 'all' 
+                      ? 'No catalogue items match your current filter criteria.'
+                      : 'The catalogue currently has no items. Add your first item above!'}
+                  </p>
+                  <button
+                    onClick={handleOpenAddModal}
+                    className="px-4 py-2 bg-amber-400 text-slate-950 font-bold text-xs rounded-xl hover:bg-amber-300 transition-colors shadow-sm inline-flex items-center gap-1.5"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Add New Catalogue Item</span>
+                  </button>
+                </div>
+              );
+            }
+
+            return (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {filtered.map((item) => {
+                  const isFruit = item.category === 'Fruits';
+                  const isGamepass = item.category === 'Gamepasses';
+
+                  return (
+                    <div
+                      key={item.id}
+                      className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 sm:p-5 flex flex-col justify-between space-y-4 hover:border-slate-700 transition-all shadow-sm"
+                    >
+                      <div className="space-y-3">
+                        {/* Header: Category Badge + Price */}
+                        <div className="flex items-start justify-between gap-2">
+                          <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                            isFruit 
+                              ? 'bg-rose-500/10 text-rose-300 border border-rose-500/20'
+                              : isGamepass
+                              ? 'bg-purple-500/10 text-purple-300 border border-purple-500/20'
+                              : 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
+                          }`}>
+                            {item.category}
+                          </span>
+                          <div className="text-right">
+                            <span className="text-lg font-mono font-extrabold text-amber-400">
+                              {item.priceM}M
+                            </span>
+                            <span className="block text-[10px] text-slate-500 font-mono">
+                              ({(item.priceHundredths / 100).toFixed(2)}M)
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Item Name */}
+                        <div>
+                          <h4 className="text-base font-bold text-white tracking-tight">
+                            {item.name}
+                          </h4>
+                          {item.description && (
+                            <p className="text-xs text-slate-400 leading-relaxed line-clamp-2 mt-1">
+                              {item.description}
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Prerequisites & Exclusions */}
+                        {(item.prerequisites || item.exclusions) && (
+                          <div className="space-y-1 pt-1 border-t border-slate-800/60 text-[11px] text-slate-400">
+                            {item.prerequisites && (
+                              <div>
+                                <span className="text-slate-500 font-medium">Reqs: </span>
+                                <span>{item.prerequisites}</span>
+                              </div>
+                            )}
+                            {item.exclusions && (
+                              <div>
+                                <span className="text-slate-500 font-medium">Excl: </span>
+                                <span>{item.exclusions}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Status Badges */}
+                        <div className="flex items-center gap-1.5 flex-wrap pt-1">
+                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium flex items-center gap-1 ${
+                            item.isPublished
+                              ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20'
+                              : 'bg-slate-800 text-slate-400 border border-slate-700'
+                          }`}>
+                            {item.isPublished ? (
+                              <>
+                                <Eye className="w-3 h-3 text-emerald-400" />
+                                <span>Available</span>
+                              </>
+                            ) : (
+                              <>
+                                <EyeOff className="w-3 h-3 text-slate-400" />
+                                <span>Unavailable</span>
+                              </>
+                            )}
+                          </span>
+
+                          {item.needsConfirmation ? (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-amber-500/10 text-amber-300 border border-amber-500/20 flex items-center gap-1">
+                              <AlertCircle className="w-3 h-3 text-amber-400" />
+                              <span>Needs Confirmation</span>
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-slate-800/60 text-slate-400 border border-slate-700/60">
+                              <span>Price Confirmed</span>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Card Action Buttons */}
+                      <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleTogglePublish(item)}
+                          className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                            item.isPublished
+                              ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white'
+                              : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30'
+                          }`}
+                          title={item.isPublished ? 'Deactivate from public view' : 'Publish to customer catalog'}
+                        >
+                          {item.isPublished ? (
+                            <>
+                              <EyeOff className="w-3.5 h-3.5" />
+                              <span>Deactivate</span>
+                            </>
+                          ) : (
+                            <>
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Activate</span>
+                            </>
+                          )}
+                        </button>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditModal(item)}
+                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition-colors"
+                            title="Edit Item Details & Price"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDeleteConfirmItem(item)}
+                            className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 transition-colors"
+                            title="Delete Item"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
       {/* MODAL: MANUAL ENQUIRY LOGGING (DISCORD / DIRECT) */}
       {showManualModal && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -717,6 +1240,251 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
           </div>
         </div>
       )}
+
+      {/* MODAL: ADD / EDIT CATALOGUE ITEM */}
+      {showAddModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-lg w-full p-6 space-y-5 shadow-2xl relative my-8">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="space-y-0.5">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-amber-400 font-semibold">
+                  Neon PostgreSQL Catalogue
+                </span>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-amber-400" />
+                  <span>{editingItem ? 'Edit Catalogue Item' : 'Add New Catalogue Item'}</span>
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAddModal(false);
+                  setEditingItem(null);
+                }}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {itemFormError && (
+              <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-300 flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <span>{itemFormError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveItem} className="space-y-4 text-xs">
+              {/* Category */}
+              <div className="space-y-1.5">
+                <label className="text-slate-300 font-semibold block">
+                  Category <span className="text-amber-400">*</span>
+                </label>
+                <select
+                  value={itemForm.category}
+                  onChange={(e) => setItemForm({ ...itemForm, category: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-amber-400"
+                >
+                  <option value="Fruits">🍎 In-Game Fruits</option>
+                  <option value="Gamepasses">🎫 Gamepasses</option>
+                  <option value="Trials">⚔️ Race V4 Trials</option>
+                  <option value="Raids">⚡ Raids</option>
+                  <option value="Sea Events">🌊 Sea Events</option>
+                  <option value="Bosses">👑 Bosses</option>
+                  <option value="Dungeons">🏰 Dungeons</option>
+                  <option value="Currency">💰 Currency (Beli/Fragments)</option>
+                  <option value="Material Drops">📦 Material Drops</option>
+                  <option value="Accessories">💍 Accessories</option>
+                  <option value="Swords">🗡️ Swords</option>
+                  <option value="Quests">📜 Quests</option>
+                  <option value="Custom">✏️ Custom Category...</option>
+                </select>
+
+                {itemForm.category === 'Custom' && (
+                  <input
+                    type="text"
+                    value={itemForm.customCategory}
+                    onChange={(e) => setItemForm({ ...itemForm, customCategory: e.target.value })}
+                    placeholder="Enter custom category name (e.g. Special Events)..."
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-amber-400 mt-2"
+                  />
+                )}
+              </div>
+
+              {/* Name & Trade Value in M */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-slate-300 font-semibold block">
+                    Item Name <span className="text-amber-400">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={itemForm.name}
+                    onChange={(e) => setItemForm({ ...itemForm, name: e.target.value })}
+                    placeholder="e.g. Kitsune Fruit, 1 Trial..."
+                    required
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-slate-300 font-semibold block">
+                    Trade Value in Millions (M) <span className="text-amber-400">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={itemForm.priceM}
+                      onChange={(e) => setItemForm({ ...itemForm, priceM: e.target.value })}
+                      placeholder="e.g. 115.00, 45.00, 0.50"
+                      required
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-3 pr-7 py-2 text-white focus:outline-none focus:border-amber-400 font-mono"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 font-mono text-xs">
+                      M
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Description */}
+              <div className="space-y-1.5">
+                <label className="text-slate-300 font-semibold block">
+                  Description
+                </label>
+                <textarea
+                  rows={2}
+                  value={itemForm.description}
+                  onChange={(e) => setItemForm({ ...itemForm, description: e.target.value })}
+                  placeholder="Details, carry rules, or notes for customer view..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-amber-400 resize-none"
+                />
+              </div>
+
+              {/* Prerequisites & Exclusions */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-slate-300 font-semibold block">
+                    Prerequisites (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={itemForm.prerequisites}
+                    onChange={(e) => setItemForm({ ...itemForm, prerequisites: e.target.value })}
+                    placeholder="e.g. Second Sea access unlocked"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-slate-300 font-semibold block">
+                    Exclusions (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={itemForm.exclusions}
+                    onChange={(e) => setItemForm({ ...itemForm, exclusions: e.target.value })}
+                    placeholder="e.g. No account sharing"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+              </div>
+
+              {/* Toggles */}
+              <div className="pt-2 border-t border-slate-800/80 space-y-2.5">
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={itemForm.isPublished}
+                    onChange={(e) => setItemForm({ ...itemForm, isPublished: e.target.checked })}
+                    className="rounded border-slate-700 bg-slate-950 text-amber-400 focus:ring-amber-400 w-4 h-4"
+                  />
+                  <div>
+                    <span className="font-semibold text-white block">Available for Customers</span>
+                    <span className="text-[11px] text-slate-400 block">
+                      When checked, customers can select this item in the live order form.
+                    </span>
+                  </div>
+                </label>
+
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={itemForm.needsConfirmation}
+                    onChange={(e) => setItemForm({ ...itemForm, needsConfirmation: e.target.checked })}
+                    className="rounded border-slate-700 bg-slate-950 text-amber-400 focus:ring-amber-400 w-4 h-4"
+                  />
+                  <div>
+                    <span className="font-semibold text-white block">Flag for Review / Price Confirmation</span>
+                    <span className="text-[11px] text-slate-400 block">
+                      Check if this item requires staff verification before booking confirmation.
+                    </span>
+                  </div>
+                </label>
+              </div>
+
+              {/* Modal Buttons */}
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAddModal(false);
+                    setEditingItem(null);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 hover:text-white transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingItem}
+                  className="px-5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold disabled:opacity-50 transition-colors shadow-sm"
+                >
+                  {savingItem ? 'Saving to Database...' : editingItem ? 'Save Changes' : 'Create Item'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: DELETE CONFIRMATION */}
+      {deleteConfirmItem && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-sm w-full p-6 space-y-4 shadow-2xl text-center">
+            <div className="w-12 h-12 bg-rose-500/10 text-rose-400 rounded-2xl flex items-center justify-center mx-auto border border-rose-500/20">
+              <Trash2 className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-white">Delete Catalogue Item?</h3>
+              <p className="text-xs text-slate-400">
+                Are you sure you want to delete <strong className="text-white">{deleteConfirmItem.name}</strong> from the database? This action cannot be undone.
+              </p>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmItem(null)}
+                className="flex-1 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteItem}
+                className="flex-1 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white transition-colors shadow-sm"
+              >
+                Delete Permanently
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
-};
+}
+

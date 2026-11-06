@@ -87,6 +87,31 @@ export const OrderFormPage: React.FC<OrderFormPageProps> = ({
     return services.find(s => s.id === selectedServiceId) || null;
   }, [services, selectedServiceId]);
 
+  // Dynamic presets loaded directly from the database catalogue (In-Game Fruits & Gamepasses)
+  const catalogPresets = useMemo(() => {
+    const dbItems = services.filter(s => s.isPublished && (s.category === 'Fruits' || s.category === 'Gamepasses'));
+    if (dbItems.length > 0) {
+      return dbItems.map(s => ({
+        name: s.name,
+        estimateM: parseFloat(s.priceM) || 0,
+        category: s.category,
+      }));
+    }
+    return COMMON_FRUIT_PRESETS.map(p => ({
+      ...p,
+      category: p.name.includes('Gamepass') ? 'Gamepasses' : 'Fruits',
+    }));
+  }, [services]);
+
+  // Lookup map of official catalogue items
+  const catalogLookup = useMemo(() => {
+    const map = new Map<string, Service>();
+    services.forEach(s => {
+      map.set(s.name.toLowerCase().trim(), s);
+    });
+    return map;
+  }, [services]);
+
   // Math calculations
   const servicePriceHundredths = selectedService ? selectedService.priceHundredths : 0;
   const { depositHundredths, remainingHundredths, depositString, remainingString, totalString } = 
@@ -126,6 +151,19 @@ export const OrderFormPage: React.FC<OrderFormPageProps> = ({
 
   const handleItemChange = (index: number, field: keyof ProposedItem, value: any) => {
     const updated = [...items];
+    if (field === 'itemName') {
+      const match = catalogLookup.get(String(value).toLowerCase().trim());
+      if (match) {
+        // Enforce official database catalogue value: customer cannot modify official catalogue prices
+        updated[index] = {
+          ...updated[index],
+          itemName: match.name,
+          proposedValueM: match.priceM,
+        };
+        setItems(updated);
+        return;
+      }
+    }
     updated[index] = { ...updated[index], [field]: value };
     setItems(updated);
   };
@@ -314,6 +352,26 @@ export const OrderFormPage: React.FC<OrderFormPageProps> = ({
               <li>You will meet at Cafe (Second Sea) or Mansion (Third Sea) to trade the 50% deposit.</li>
               <li>Once the carry is finished, you trade the remaining 50% balance.</li>
             </ol>
+          </div>
+
+          {/* Discord Proof & Live Screen-Share Notice */}
+          <div className="bg-gradient-to-r from-indigo-950/40 to-slate-900 border border-indigo-500/20 rounded-2xl p-4 text-left space-y-2 text-xs">
+            <span className="font-semibold text-white flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse" />
+              Discord Proof & Live Screen-Share
+            </span>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              All carry completion proofs and live gameplay screen-sharing are coordinated manually in our Discord server. Join the community and drop your Order Code <strong className="text-amber-400 font-mono">{confirmedOrder.orderCode}</strong> in #support-tickets.
+            </p>
+            <a
+              href={import.meta.env.VITE_DISCORD_INVITE_URL || 'https://discord.gg/placeholder-blox-fruit-services'}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-xs text-indigo-400 hover:text-indigo-300 font-semibold"
+            >
+              <span>Join Discord Server</span>
+              <ExternalLink className="w-3.5 h-3.5" />
+            </a>
           </div>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
@@ -534,17 +592,17 @@ export const OrderFormPage: React.FC<OrderFormPageProps> = ({
             </div>
           </div>
 
-          {/* Fruit Presets Helper */}
+          {/* Fruit Presets Helper - Directly from Database Catalogue */}
           <div className="bg-slate-900/50 border border-slate-800/80 rounded-2xl p-4 space-y-2">
             <div className="flex items-center justify-between text-xs">
               <span className="font-semibold text-slate-300 flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span>Common Fruit & Gamepass Estimates</span>
+                <span>Live Catalogue Pricing (Fruits & Gamepasses)</span>
               </span>
-              <span className="text-[11px] text-slate-500">Tap to add item row</span>
+              <span className="text-[11px] text-slate-500">Click to add verified item</span>
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              {COMMON_FRUIT_PRESETS.map((p) => (
+            <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto pr-1">
+              {catalogPresets.map((p) => (
                 <button
                   type="button"
                   key={p.name}
@@ -552,7 +610,7 @@ export const OrderFormPage: React.FC<OrderFormPageProps> = ({
                   className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 rounded-lg text-[11px] text-slate-300 flex items-center gap-1.5 transition-colors"
                 >
                   <span>{p.name}</span>
-                  <span className="font-mono text-amber-400 font-semibold">~{p.estimateM}M</span>
+                  <span className="font-mono text-amber-400 font-semibold">{p.estimateM}M</span>
                 </button>
               ))}
             </div>
@@ -566,7 +624,7 @@ export const OrderFormPage: React.FC<OrderFormPageProps> = ({
                   Items You Offer
                 </h3>
                 <p className="text-[11px] text-slate-400">
-                  Multiple items allowed. Enter your estimated trade value in Millions (M).
+                  Multiple items allowed. Official catalogue items lock automatically to prevent price tampering.
                 </p>
               </div>
               <button
@@ -580,70 +638,95 @@ export const OrderFormPage: React.FC<OrderFormPageProps> = ({
             </div>
 
             <div className="space-y-3">
-              {items.map((item, idx) => (
-                <div 
-                  key={idx}
-                  className="bg-slate-950 p-3 rounded-xl border border-slate-800/80 grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-center"
-                >
-                  <div className="sm:col-span-6">
-                    <label className="text-[10px] text-slate-500 uppercase block mb-1">
-                      Fruit / Gamepass Name
-                    </label>
-                    <input
-                      type="text"
-                      value={item.itemName}
-                      onChange={(e) => handleItemChange(idx, 'itemName', e.target.value)}
-                      placeholder="e.g. Dough Fruit, 2x Mastery..."
-                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-amber-400"
-                    />
-                  </div>
+              {items.map((item, idx) => {
+                const isCatalogMatch = catalogLookup.has(item.itemName.toLowerCase().trim());
 
-                  <div className="sm:col-span-2">
-                    <label className="text-[10px] text-slate-500 uppercase block mb-1">
-                      Qty
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="10"
-                      value={item.quantity}
-                      onChange={(e) => handleItemChange(idx, 'quantity', parseInt(e.target.value, 10) || 1)}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-amber-400 font-mono"
-                    />
-                  </div>
+                return (
+                  <div 
+                    key={idx}
+                    className="bg-slate-950 p-3 rounded-xl border border-slate-800/80 grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-center"
+                  >
+                    <div className="sm:col-span-6">
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[10px] text-slate-500 uppercase">
+                          Fruit / Gamepass Name
+                        </label>
+                        {isCatalogMatch && (
+                          <span className="text-[10px] font-semibold text-emerald-400 flex items-center gap-1">
+                            <ShieldCheck className="w-3 h-3" />
+                            Catalogue Verified
+                          </span>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        value={item.itemName}
+                        onChange={(e) => handleItemChange(idx, 'itemName', e.target.value)}
+                        placeholder="e.g. Kitsune Fruit, 2x Mastery..."
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-amber-400"
+                      />
+                    </div>
 
-                  <div className="sm:col-span-3">
-                    <label className="text-[10px] text-slate-500 uppercase block mb-1">
-                      Est. Value (M)
-                    </label>
-                    <div className="relative">
+                    <div className="sm:col-span-2">
+                      <label className="text-[10px] text-slate-500 uppercase block mb-1">
+                        Qty
+                      </label>
                       <input
                         type="number"
-                        step="0.01"
-                        min="0"
-                        value={item.proposedValueM}
-                        onChange={(e) => handleItemChange(idx, 'proposedValueM', e.target.value)}
-                        placeholder="e.g. 25"
-                        className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-2.5 pr-6 py-1.5 text-xs text-white focus:outline-none focus:border-amber-400 font-mono"
+                        min="1"
+                        max="10"
+                        value={item.quantity}
+                        onChange={(e) => handleItemChange(idx, 'quantity', parseInt(e.target.value, 10) || 1)}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-amber-400 font-mono"
                       />
-                      <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-500 font-mono">
-                        M
-                      </span>
+                    </div>
+
+                    <div className="sm:col-span-3">
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[10px] text-slate-500 uppercase">
+                          Trade Value (M)
+                        </label>
+                        {isCatalogMatch && (
+                          <span className="text-[9px] text-slate-400 font-mono">
+                            Locked
+                          </span>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          readOnly={isCatalogMatch}
+                          value={item.proposedValueM}
+                          onChange={(e) => handleItemChange(idx, 'proposedValueM', e.target.value)}
+                          placeholder="e.g. 25"
+                          className={`w-full border rounded-lg pl-2.5 pr-6 py-1.5 text-xs font-mono ${
+                            isCatalogMatch
+                              ? 'bg-slate-900/80 text-amber-300 border-amber-500/30 cursor-not-allowed font-semibold'
+                              : 'bg-slate-900 border-slate-800 text-white focus:outline-none focus:border-amber-400'
+                          }`}
+                          title={isCatalogMatch ? 'Price is locked to official database catalogue value.' : ''}
+                        />
+                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-500 font-mono">
+                          M
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="sm:col-span-1 flex justify-end sm:pt-4">
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveItem(idx)}
+                        className="p-1.5 text-slate-500 hover:text-rose-400 transition-colors"
+                        title="Remove item"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
-
-                  <div className="sm:col-span-1 flex justify-end sm:pt-4">
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveItem(idx)}
-                      className="p-1.5 text-slate-500 hover:text-rose-400 transition-colors"
-                      title="Remove item"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* Live Math Calculation Strip */}

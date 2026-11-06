@@ -26,7 +26,7 @@ async function seed() {
   console.log(`Unconfirmed / hidden services pending staff review: ${unconfirmedCount}`);
 
   // Triggers repository state check/creation
-  const allServices = dbRepository.getServices();
+  const allServices = await dbRepository.getServices();
   console.log(`Repository active services count: ${allServices.length}`);
   console.log('Catalog seed verified successfully!');
 }

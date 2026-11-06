@@ -647,17 +647,17 @@ export const AdminOrderDetailPage: React.FC<AdminOrderDetailPageProps> = ({
         <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5 text-xs text-slate-300 space-y-1">
           <div className="font-semibold text-amber-300 flex items-center gap-1.5">
             <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
-            <span>Screen-Sharing & Proof Protocol:</span>
+            <span>Discord Manual Proof Protocol:</span>
           </div>
           <p className="text-[11px] text-slate-400 leading-relaxed">
-            Customers may voluntarily share <strong>only their Roblox application window</strong> over Discord. Staff members never request passwords, 2FA codes, or session cookies. Evidence published to the public Proofs wall strictly requires customer consent (currently: <strong className={order.consentPublicProofs ? 'text-emerald-300' : 'text-slate-300'}>{order.consentPublicProofs ? 'Granted' : 'Not Granted'}</strong>).
+            All gameplay evidence, screenshots, and live screen-share sessions are managed manually through Discord. Staff record Discord channel links, message references, or session notes below. Evidence published to the public Proofs showcase strictly requires customer consent (currently: <strong className={order.consentPublicProofs ? 'text-emerald-300' : 'text-slate-300'}>{order.consentPublicProofs ? 'Granted' : 'Not Granted'}</strong>).
           </p>
         </div>
 
         {/* Add Evidence Form */}
         {showAddEvidence && (
           <form onSubmit={handleSaveEvidence} className="bg-slate-950 p-4 rounded-2xl border border-amber-500/30 space-y-3">
-            <h4 className="text-xs font-bold text-white uppercase">Record New Evidence</h4>
+            <h4 className="text-xs font-bold text-white uppercase">Record Discord Proof Reference</h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="text-[11px] text-slate-400 block mb-1">Evidence Type</label>
@@ -666,19 +666,19 @@ export const AdminOrderDetailPage: React.FC<AdminOrderDetailPageProps> = ({
                   onChange={(e) => setEvidenceForm({ ...evidenceForm, evidenceType: e.target.value as any })}
                   className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-amber-400"
                 >
-                  <option value="screenshot">Screenshot (Image URL)</option>
-                  <option value="video_link">Video Recording (YouTube / Streamable)</option>
-                  <option value="screen_share_session">Live Discord Screen-Share Session</option>
+                  <option value="screenshot">Discord Message / Screenshot Link</option>
+                  <option value="screen_share_session">Discord Live Screen-Share Session ID / Note</option>
+                  <option value="video_link">Video Recording Link (YouTube / Streamable)</option>
                 </select>
               </div>
 
               <div>
-                <label className="text-[11px] text-slate-400 block mb-1">Media URL or Session Note <span className="text-amber-400">*</span></label>
+                <label className="text-[11px] text-slate-400 block mb-1">Discord Reference / Link / Note <span className="text-amber-400">*</span></label>
                 <input
                   type="text"
                   value={evidenceForm.mediaUrl}
                   onChange={(e) => setEvidenceForm({ ...evidenceForm, mediaUrl: e.target.value })}
-                  placeholder="https://... or Discord Session ID"
+                  placeholder="e.g. Discord message link, channel #proofs ref, or session ID"
                   required
                   className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-amber-400"
                 />

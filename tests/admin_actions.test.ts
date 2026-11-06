@@ -43,12 +43,12 @@ console.log('✓ HMAC-SHA256 session token generation, verification, and tamper 
 // Test 3: Staff Order Lifecycle & Audit Invariants
 {
   // 1. Create a test order
-  const service = dbRepository.getServices({ onlyPublished: true })[0];
+  const service = (await dbRepository.getServices({ onlyPublished: true }))[0];
   const { depositHundredths, remainingHundredths } = calculateDepositAndRemaining(service.priceHundredths);
-  const code = dbRepository.getNextOrderCode();
+  const code = await dbRepository.getNextOrderCode();
   const token = generatePublicToken();
 
-  const { order, items } = dbRepository.createOrder(
+  const { order, items } = await dbRepository.createOrder(
     {
       publicToken: token,
       orderCode: code,
@@ -73,7 +73,7 @@ console.log('✓ HMAC-SHA256 session token generation, verification, and tamper 
   assert.equal(order.status, 'pending_review');
 
   // 2. Staff inspects & confirms item valuation
-  const updatedItem1 = dbRepository.updateOrderItem(items[0].id, {
+  const updatedItem1 = await dbRepository.updateOrderItem(items[0].id, {
     agreedValueHundredths: 2500,
     verified: true,
   });
@@ -81,11 +81,11 @@ console.log('✓ HMAC-SHA256 session token generation, verification, and tamper 
   assert.equal(updatedItem1?.agreedValueHundredths, 2500);
 
   // 3. Staff accepts order
-  const acceptedOrder = dbRepository.updateOrderStatus(order.id, 'accepted', 'staff', 'Offer accepted by Alex');
+  const acceptedOrder = await dbRepository.updateOrderStatus(order.id, 'accepted', 'staff', 'Offer accepted by Alex');
   assert.equal(acceptedOrder?.status, 'accepted');
 
   // 4. Staff records 50% deposit received in-game
-  const depositPayment = dbRepository.recordPayment(
+  const depositPayment = await dbRepository.recordPayment(
     order.id,
     'deposit',
     depositHundredths,
@@ -96,19 +96,19 @@ console.log('✓ HMAC-SHA256 session token generation, verification, and tamper 
   assert.equal(depositPayment.amountHundredths, depositHundredths);
   assert.equal(depositPayment.recordedBy, 'Staff_Alex');
 
-  dbRepository.updateOrderStatus(order.id, 'deposit_received', 'staff', '50% deposit received in-game');
-  assert.equal(dbRepository.getOrderById(order.id)?.status, 'deposit_received');
+  await dbRepository.updateOrderStatus(order.id, 'deposit_received', 'staff', '50% deposit received in-game');
+  assert.equal((await dbRepository.getOrderById(order.id))?.status, 'deposit_received');
 
   // 5. Staff marks in_progress
-  dbRepository.updateOrderStatus(order.id, 'in_progress', 'staff', 'Carry commenced');
-  assert.equal(dbRepository.getOrderById(order.id)?.status, 'in_progress');
+  await dbRepository.updateOrderStatus(order.id, 'in_progress', 'staff', 'Carry commenced');
+  assert.equal((await dbRepository.getOrderById(order.id))?.status, 'in_progress');
 
   // 6. Staff marks completed
-  dbRepository.updateOrderStatus(order.id, 'completed', 'staff', 'Carry finished');
-  assert.equal(dbRepository.getOrderById(order.id)?.status, 'completed');
+  await dbRepository.updateOrderStatus(order.id, 'completed', 'staff', 'Carry finished');
+  assert.equal((await dbRepository.getOrderById(order.id))?.status, 'completed');
 
   // 7. Staff records remaining payment -> fully_paid
-  const remainingPayment = dbRepository.recordPayment(
+  const remainingPayment = await dbRepository.recordPayment(
     order.id,
     'remaining',
     remainingHundredths,
@@ -116,11 +116,11 @@ console.log('✓ HMAC-SHA256 session token generation, verification, and tamper 
     'Staff_Alex'
   );
   assert.equal(remainingPayment.kind, 'remaining');
-  dbRepository.updateOrderStatus(order.id, 'fully_paid', 'staff', 'Remaining balance received in-game');
-  assert.equal(dbRepository.getOrderById(order.id)?.status, 'fully_paid');
+  await dbRepository.updateOrderStatus(order.id, 'fully_paid', 'staff', 'Remaining balance received in-game');
+  assert.equal((await dbRepository.getOrderById(order.id))?.status, 'fully_paid');
 
   // 8. Audit trail check: every single action above generated an immutable log
-  const auditLogs = dbRepository.getOrderAuditLogs(order.id);
+  const auditLogs = await dbRepository.getOrderAuditLogs(order.id);
   assert.ok(auditLogs.length >= 6, `Expected at least 6 audit log entries, found ${auditLogs.length}`);
 
   const actions = auditLogs.map(l => l.action);
@@ -134,9 +134,9 @@ console.log('✓ HMAC-SHA256 session token generation, verification, and tamper 
   assert.ok(actions.includes('STATUS_CHANGE_COMPLETED_TO_FULLY_PAID'));
 
   // Verify internal staff notes update
-  dbRepository.updateOrderStaffNotes(order.id, 'Client was friendly, traded at Mansion in Third Sea.');
+  await dbRepository.updateOrderStaffNotes(order.id, 'Client was friendly, traded at Mansion in Third Sea.');
   assert.equal(
-    dbRepository.getOrderById(order.id)?.staffNotes,
+    (await dbRepository.getOrderById(order.id))?.staffNotes,
     'Client was friendly, traded at Mansion in Third Sea.'
   );
 }

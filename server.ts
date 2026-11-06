@@ -2,7 +2,8 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { dbRepository } from './src/db/index.ts';
+import { dbRepository, ensureNeonServicesSeeded } from './src/db/index.ts';
+import { ensureNeonSchema, isNeonConfigured, getNeonDb } from './src/db/neon.ts';
 import { 
   toHundredths, 
   calculateDepositAndRemaining, 
@@ -13,13 +14,6 @@ import {
   createStaffSessionToken, 
   verifyStaffSessionToken 
 } from './src/lib/auth.ts';
-import {
-  isStorageConfigured,
-  getStorageBucketName,
-  generateUploadPresignedUrl,
-  generateDownloadPresignedUrl,
-  validateMediaUpload,
-} from './src/lib/storage.ts';
 
 dotenv.config();
 
@@ -27,6 +21,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+app.set('trust proxy', true);
 
 function resolvePort(): number {
   const portArgIndex = process.argv.findIndex((arg) => arg === '--port' || arg === '-p');
@@ -72,9 +67,9 @@ setInterval(() => {
 // --- PUBLIC API ROUTES ---
 
 // 1. Get published services catalog
-app.get('/api/services', (_req, res) => {
+app.get('/api/services', async (_req, res) => {
   try {
-    const published = dbRepository.getServices({ onlyPublished: true });
+    const published = await dbRepository.getServices({ onlyPublished: true });
     res.json({ success: true, services: published });
   } catch (err: any) {
     console.error('Error fetching services:', err);
@@ -83,12 +78,12 @@ app.get('/api/services', (_req, res) => {
 });
 
 // 2. Get single published service by slug or ID
-app.get('/api/services/:identifier', (req, res) => {
+app.get('/api/services/:identifier', async (req, res) => {
   try {
     const { identifier } = req.params;
-    let service = dbRepository.getServiceBySlug(identifier);
+    let service = await dbRepository.getServiceBySlug(identifier);
     if (!service) {
-      service = dbRepository.getServiceById(identifier);
+      service = await dbRepository.getServiceById(identifier);
     }
 
     if (!service || !service.isPublished) {
@@ -101,42 +96,43 @@ app.get('/api/services/:identifier', (req, res) => {
   }
 });
 
-// 3. Create Order
-app.post('/api/orders', (req, res) => {
+// 3. Submit Customer Order
+app.post('/api/orders', async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.toString() || req.socket.remoteAddress || 'unknown';
-  if (!checkRateLimit(ip, 10, 60000)) {
+  if (!checkRateLimit(`order_${ip}`, 10, 60000)) {
     return res.status(429).json({ 
       success: false, 
-      error: 'Too many requests. Please wait a minute before submitting again.' 
+      error: 'Too many order requests. Please wait a minute before submitting again.' 
     });
   }
 
   try {
-    const {
-      serviceId,
-      robloxUsername,
-      timezone,
-      availability,
-      paymentType,
-      items,
+    const { 
+      serviceId, 
+      robloxUsername, 
+      timezone, 
+      availability, 
+      paymentType, 
+      items, 
       customerNote,
-      consentPublicProofs,
+      consentPublicProofs
     } = req.body;
 
-    // Validation
-    if (!serviceId || !robloxUsername || !timezone || !availability || !paymentType) {
+    if (!serviceId || !robloxUsername || !timezone || !availability) {
       return res.status(400).json({ 
         success: false, 
-        error: 'Missing required order details (service, Roblox username, timezone, availability, payment type).' 
+        error: 'Missing required order fields (serviceId, robloxUsername, timezone, availability)' 
       });
     }
 
-    // Verify service exists and is strictly PUBLISHED
-    const service = dbRepository.getServiceById(serviceId);
-    if (!service || !service.isPublished) {
+    const service = await dbRepository.getServiceById(serviceId);
+    if (!service) {
+      return res.status(404).json({ success: false, error: 'Service not found in catalog' });
+    }
+    if (!service.isPublished) {
       return res.status(400).json({ 
         success: false, 
-        error: 'The requested service is not currently available for ordering.' 
+        error: 'This service is currently unavailable for new bookings.' 
       });
     }
 
@@ -157,11 +153,27 @@ app.post('/api/orders', (req, res) => {
       });
     }
 
+    // Fetch current catalog to ensure customer cannot tamper with or manipulate catalogue prices
+    const catalogServices = await dbRepository.getServices();
+    const catalogMap = new Map<string, number>();
+    for (const cat of catalogServices) {
+      catalogMap.set(cat.name.toLowerCase().trim(), cat.priceHundredths);
+    }
+
     const orderItemsData = items.map((item: any) => {
       const name = String(item.itemName || '').trim();
       const qty = Math.max(1, parseInt(item.quantity || 1, 10));
-      const valM = parseFloat(item.proposedValueM || 0);
-      const valHundredths = toHundredths(isNaN(valM) ? 0 : valM);
+      const cleanLower = name.toLowerCase();
+
+      // If item is found in the official database catalogue, strictly lock its value
+      // Customers are NEVER allowed to override or reduce official catalogue trade values
+      let valHundredths: number;
+      if (catalogMap.has(cleanLower)) {
+        valHundredths = catalogMap.get(cleanLower)!;
+      } else {
+        const valM = parseFloat(item.proposedValueM || 0);
+        valHundredths = toHundredths(isNaN(valM) ? 0 : valM);
+      }
 
       return {
         itemName: name || 'Unnamed Item',
@@ -175,9 +187,9 @@ app.post('/api/orders', (req, res) => {
     const { depositHundredths, remainingHundredths } = calculateDepositAndRemaining(totalHundredths);
 
     const publicToken = generatePublicToken();
-    const orderCode = dbRepository.getNextOrderCode();
+    const orderCode = await dbRepository.getNextOrderCode();
 
-    const { order, items: createdItems } = dbRepository.createOrder(
+    const { order } = await dbRepository.createOrder(
       {
         publicToken,
         orderCode,
@@ -214,22 +226,22 @@ app.post('/api/orders', (req, res) => {
 });
 
 // 4. Public Order Status by unguessable public_token
-app.get('/api/orders/track/:token', (req, res) => {
+app.get('/api/orders/track/:token', async (req, res) => {
   try {
     const { token } = req.params;
     if (!token || token.length < 16) {
       return res.status(400).json({ success: false, error: 'Invalid tracking token' });
     }
 
-    const order = dbRepository.getOrderByPublicToken(token);
+    const order = await dbRepository.getOrderByPublicToken(token);
     if (!order) {
       return res.status(404).json({ success: false, error: 'Order not found. Please check your tracking link.' });
     }
 
-    const service = dbRepository.getServiceById(order.serviceId);
-    const items = dbRepository.getOrderItems(order.id);
-    const auditLogs = dbRepository.getOrderAuditLogs(order.id);
-    const payments = dbRepository.getOrderPayments(order.id);
+    const service = await dbRepository.getServiceById(order.serviceId);
+    const items = await dbRepository.getOrderItems(order.id);
+    const auditLogs = await dbRepository.getOrderAuditLogs(order.id);
+    const payments = await dbRepository.getOrderPayments(order.id);
 
     // Filter audit logs for customer view (strip sensitive internal staff notes)
     const publicTimeline = auditLogs.map(log => ({
@@ -283,7 +295,7 @@ app.get('/api/orders/track/:token', (req, res) => {
 });
 
 // 5. Submit Customer Support Enquiry
-app.post('/api/support/enquiries', (req, res) => {
+app.post('/api/support/enquiries', async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.toString() || req.socket.remoteAddress || 'unknown';
   if (!checkRateLimit(`enquiry_${ip}`, 8, 60000)) {
     return res.status(429).json({ 
@@ -305,7 +317,7 @@ app.post('/api/support/enquiries', (req, res) => {
     const cleanSubject = String(subject).trim().slice(0, 150);
     const cleanMessage = String(message).trim().slice(0, 2000);
 
-    const enquiry = dbRepository.createEnquiry({
+    const enquiry = await dbRepository.createEnquiry({
       source: 'website',
       customerName: customerName ? String(customerName).trim().slice(0, 100) : null,
       robloxUsername: cleanUsername,
@@ -331,25 +343,8 @@ app.post('/api/support/enquiries', (req, res) => {
 // 6. Public Proofs Showcase (Strictly Customer Consented + Staff Approved)
 app.get('/api/proofs', async (_req, res) => {
   try {
-    const proofs = dbRepository.getPublicProofs();
-
-    // If evidence points to an S3 object key and storage is configured,
-    // generate a presigned download URL for viewing so private bucket objects can be displayed safely
-    const enriched = await Promise.all(
-      proofs.map(async (p) => {
-        if (p.mediaUrl && p.mediaUrl.startsWith('evidence/') && isStorageConfigured()) {
-          try {
-            const presignedUrl = await generateDownloadPresignedUrl(p.mediaUrl, 3600);
-            return { ...p, mediaUrl: presignedUrl, storageKey: p.mediaUrl };
-          } catch (e) {
-            console.error('Failed presigning mediaUrl for proof:', p.id, e);
-          }
-        }
-        return p;
-      })
-    );
-
-    res.json({ success: true, proofs: enriched });
+    const proofs = await dbRepository.getPublicProofs();
+    res.json({ success: true, proofs });
   } catch (err: any) {
     console.error('Error fetching proofs:', err);
     res.status(500).json({ success: false, error: 'Failed to fetch public proofs' });
@@ -357,9 +352,9 @@ app.get('/api/proofs', async (_req, res) => {
 });
 
 // 7. Ongoing Services (Active Carries Queue - Privacy Masked unless consented)
-app.get('/api/ongoing', (_req, res) => {
+app.get('/api/ongoing', async (_req, res) => {
   try {
-    const activeCarries = dbRepository.getOngoingCarries();
+    const activeCarries = await dbRepository.getOngoingCarries();
     res.json({ success: true, activeCarries });
   } catch (err: any) {
     console.error('Error fetching ongoing carries:', err);
@@ -367,123 +362,53 @@ app.get('/api/ongoing', (_req, res) => {
   }
 });
 
-// 8. Generate Presigned Upload URL for Screenshots and Videos
-// Keeps customer uploads private by default in 'blox-fruit-services-media'
-app.post('/api/storage/presigned-upload', async (req, res) => {
-  try {
-    const staffToken = extractStaffToken(req);
-    const staffSession = staffToken ? verifyStaffSessionToken(staffToken) : null;
-
-    const { orderId, publicToken, filename, contentType } = req.body;
-
-    if (!filename || !contentType) {
-      return res.status(400).json({ success: false, error: 'filename and contentType are required' });
-    }
-
-    // Permission check: Must be authenticated staff OR customer with valid publicToken matching the order
-    if (!staffSession) {
-      if (!publicToken || !orderId) {
-        return res.status(401).json({ 
-          success: false, 
-          error: 'Unauthorized: Staff session or order public tracking token required to request upload URL' 
-        });
-      }
-      const order = dbRepository.getOrderById(orderId);
-      if (!order || order.publicToken !== publicToken) {
-        return res.status(403).json({ success: false, error: 'Forbidden: Invalid order tracking token' });
-      }
-    }
-
-    const validation = validateMediaUpload(filename, contentType);
-    if (!validation.valid) {
-      return res.status(400).json({ success: false, error: validation.error });
-    }
-
-    const result = await generateUploadPresignedUrl({
-      orderId,
-      filename,
-      contentType,
-      expiresInSeconds: 900,
-    });
-
-    res.json({
-      success: true,
-      uploadUrl: result.uploadUrl,
-      fileKey: result.fileKey,
-      bucket: result.bucket,
-      expiresIn: result.expiresIn,
-    });
-  } catch (err: any) {
-    console.error('Error generating presigned upload URL:', err);
-    res.status(500).json({ 
-      success: false, 
-      error: err.message || 'Failed to generate presigned upload URL' 
-    });
-  }
+// 8. Notice: Website media uploads are disabled. Proofs are coordinated via Discord.
+app.post('/api/storage/presigned-upload', (_req, res) => {
+  res.status(400).json({
+    success: false,
+    error: 'Website media uploads are disabled. All service completion proofs and screenshots are coordinated and shared manually through Discord.'
+  });
 });
 
-// 9. Generate Presigned Download URL for Private Media Access
-app.get('/api/storage/presigned-download', async (req, res) => {
-  try {
-    const { key, publicToken } = req.query;
-    if (!key || typeof key !== 'string') {
-      return res.status(400).json({ success: false, error: 'File key is required' });
-    }
-
-    const staffToken = extractStaffToken(req);
-    const staffSession = staffToken ? verifyStaffSessionToken(staffToken) : null;
-
-    // Check permissions: Staff can view all evidence;
-    // Customer can view if publicToken matches the order referenced in key;
-    // Or if the evidence has public approval and customer consent.
-    let isAuthorized = Boolean(staffSession);
-
-    if (!isAuthorized) {
-      const allEvidence = dbRepository.listEvidence({ isCompleted: true, staffApprovedPublic: true });
-      const publicItem = allEvidence.find(e => e.mediaUrl === key && e.customerConsentPublic);
-      if (publicItem) {
-        isAuthorized = true;
-      }
-    }
-
-    if (!isAuthorized && publicToken && typeof publicToken === 'string') {
-      const order = dbRepository.getOrderByPublicToken(publicToken);
-      if (order && key.includes(`/${order.id}/`)) {
-        isAuthorized = true;
-      }
-    }
-
-    if (!isAuthorized) {
-      return res.status(403).json({ 
-        success: false, 
-        error: 'Forbidden: You do not have permission to access this private media' 
-      });
-    }
-
-    const downloadUrl = await generateDownloadPresignedUrl(key, 3600);
-    res.json({ success: true, downloadUrl });
-  } catch (err: any) {
-    console.error('Error generating presigned download URL:', err);
-    res.status(500).json({ 
-      success: false, 
-      error: err.message || 'Failed to generate download URL' 
-    });
-  }
+// 9. Notice: Website media download presigning is disabled. Proofs are shared via Discord.
+app.get('/api/storage/presigned-download', (_req, res) => {
+  res.status(400).json({
+    success: false,
+    error: 'Website media storage is disabled. All service proofs are shared manually through Discord.'
+  });
 });
 
 // --- STAFF ADMIN AUTHENTICATION & API ROUTES ---
 
 // Helper to extract session token from Authorization header or cookie
 function extractStaffToken(req: express.Request): string | null {
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    return authHeader.substring(7);
+  // 1. Authorization header: Bearer <token>
+  const authHeader = req.get('authorization') || req.headers.authorization;
+  if (authHeader && typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+    const raw = authHeader.substring(7).trim();
+    if (raw && raw !== 'null' && raw !== 'undefined') {
+      return raw;
+    }
   }
+
+  // 2. Cookie header: bfs_staff_session=<token>
   const cookieHeader = req.headers.cookie;
-  if (cookieHeader) {
-    const match = cookieHeader.match(/bfs_staff_session=([^;]+)/);
-    if (match) return match[1];
+  if (cookieHeader && typeof cookieHeader === 'string') {
+    const match = cookieHeader.match(/(?:^|;\s*)bfs_staff_session=([^;]+)/);
+    if (match) {
+      let raw = match[1].trim();
+      try {
+        raw = decodeURIComponent(raw);
+      } catch {}
+      if (raw.startsWith('"') && raw.endsWith('"')) {
+        raw = raw.slice(1, -1).trim();
+      }
+      if (raw && raw !== 'null' && raw !== 'undefined') {
+        return raw;
+      }
+    }
   }
+
   return null;
 }
 
@@ -491,12 +416,12 @@ function extractStaffToken(req: express.Request): string | null {
 function requireStaffAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   const token = extractStaffToken(req);
   if (!token) {
-    return res.status(401).json({ success: false, error: 'Unauthorized: Staff session required' });
+    return res.status(401).json({ success: false, error: 'Unauthorized: Admin Only. Staff session required.' });
   }
 
   const session = verifyStaffSessionToken(token);
-  if (!session) {
-    return res.status(401).json({ success: false, error: 'Session expired or invalid. Please log in again.' });
+  if (!session || session.role !== 'staff') {
+    return res.status(401).json({ success: false, error: 'Unauthorized: Admin Only. Session expired or invalid. Please log in again.' });
   }
 
   (req as any).staffSession = session;
@@ -506,7 +431,6 @@ function requireStaffAuth(req: express.Request, res: express.Response, next: exp
 // 1. Staff Login
 app.post('/api/admin/login', (req, res) => {
   const ip = req.headers['x-forwarded-for']?.toString() || req.socket.remoteAddress || 'unknown';
-  // Strict rate limit on staff login: max 5 attempts per minute
   if (!checkRateLimit(`login_${ip}`, 5, 60000)) {
     return res.status(429).json({ 
       success: false, 
@@ -520,11 +444,16 @@ app.post('/api/admin/login', (req, res) => {
   }
 
   const token = createStaffSessionToken('staff_operator');
-  // Set HTTP-only secure cookie
-  res.setHeader(
-    'Set-Cookie',
-    `bfs_staff_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`
-  );
+  const proto = (req.headers['x-forwarded-proto'] || req.protocol || '').toString().toLowerCase();
+  const host = (req.headers['host'] || '').toLowerCase();
+  const isHttps = req.secure || proto.includes('https') || host.includes('run.app') || process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
+
+  // Include Partitioned attribute for CHIPS (Chrome / iframe partitioned cookies)
+  const cookieOpts = isHttps
+    ? `bfs_staff_session=${token}; Path=/; HttpOnly; SameSite=None; Secure; Partitioned; Max-Age=86400`
+    : `bfs_staff_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`;
+
+  res.setHeader('Set-Cookie', cookieOpts);
 
   return res.json({
     success: true,
@@ -535,11 +464,16 @@ app.post('/api/admin/login', (req, res) => {
 });
 
 // 2. Staff Logout
-app.post('/api/admin/logout', (_req, res) => {
-  res.setHeader(
-    'Set-Cookie',
-    'bfs_staff_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'
-  );
+app.post('/api/admin/logout', (req, res) => {
+  const proto = (req.headers['x-forwarded-proto'] || req.protocol || '').toString().toLowerCase();
+  const host = (req.headers['host'] || '').toLowerCase();
+  const isHttps = req.secure || proto.includes('https') || host.includes('run.app') || process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
+
+  const cookieOpts = isHttps
+    ? 'bfs_staff_session=; Path=/; HttpOnly; SameSite=None; Secure; Partitioned; Max-Age=0'
+    : 'bfs_staff_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0';
+
+  res.setHeader('Set-Cookie', cookieOpts);
   res.json({ success: true, message: 'Logged out successfully' });
 });
 
@@ -550,39 +484,41 @@ app.get('/api/admin/me', requireStaffAuth, (req, res) => {
 });
 
 // 4. List All Orders for Staff Dashboard
-app.get('/api/admin/orders', requireStaffAuth, (req, res) => {
+app.get('/api/admin/orders', requireStaffAuth, async (req, res) => {
   try {
     const status = req.query.status?.toString();
     const search = req.query.search?.toString();
 
-    const orders = dbRepository.listOrders({ status, search });
+    const orders = await dbRepository.listOrders({ status, search });
     
     // Enrich orders with service name and payment totals
-    const enriched = orders.map(o => {
-      const service = dbRepository.getServiceById(o.serviceId);
-      const payments = dbRepository.getOrderPayments(o.id);
-      const totalPaidHundredths = payments.reduce((sum, p) => sum + p.amountHundredths, 0);
+    const enriched = await Promise.all(
+      orders.map(async (o) => {
+        const service = await dbRepository.getServiceById(o.serviceId);
+        const payments = await dbRepository.getOrderPayments(o.id);
+        const totalPaidHundredths = payments.reduce((sum, p) => sum + p.amountHundredths, 0);
 
-      return {
-        id: o.id,
-        orderCode: o.orderCode,
-        publicToken: o.publicToken,
-        serviceId: o.serviceId,
-        serviceName: service ? service.name : 'Unknown Service',
-        serviceCategory: service ? service.category : 'General',
-        robloxUsername: o.robloxUsername,
-        timezone: o.timezone,
-        availability: o.availability,
-        paymentType: o.paymentType,
-        status: o.status,
-        totalPriceM: (o.totalPriceHundredths / 100).toFixed(2),
-        depositM: (o.depositHundredths / 100).toFixed(2),
-        remainingM: (o.remainingHundredths / 100).toFixed(2),
-        totalPaidM: (totalPaidHundredths / 100).toFixed(2),
-        createdAt: o.createdAt,
-        updatedAt: o.updatedAt,
-      };
-    });
+        return {
+          id: o.id,
+          orderCode: o.orderCode,
+          publicToken: o.publicToken,
+          serviceId: o.serviceId,
+          serviceName: service ? service.name : 'Unknown Service',
+          serviceCategory: service ? service.category : 'General',
+          robloxUsername: o.robloxUsername,
+          timezone: o.timezone,
+          availability: o.availability,
+          paymentType: o.paymentType,
+          status: o.status,
+          totalPriceM: (o.totalPriceHundredths / 100).toFixed(2),
+          depositM: (o.depositHundredths / 100).toFixed(2),
+          remainingM: (o.remainingHundredths / 100).toFixed(2),
+          totalPaidM: (totalPaidHundredths / 100).toFixed(2),
+          createdAt: o.createdAt,
+          updatedAt: o.updatedAt,
+        };
+      })
+    );
 
     res.json({ success: true, orders: enriched });
   } catch (err: any) {
@@ -592,22 +528,22 @@ app.get('/api/admin/orders', requireStaffAuth, (req, res) => {
 });
 
 // 5. Get Single Order Detail with Audit Logs and Payments
-app.get('/api/admin/orders/:id', requireStaffAuth, (req, res) => {
+app.get('/api/admin/orders/:id', requireStaffAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    let order = dbRepository.getOrderById(id);
+    let order = await dbRepository.getOrderById(id);
     if (!order) {
-      order = dbRepository.getOrderByCode(id);
+      order = await dbRepository.getOrderByCode(id);
     }
 
     if (!order) {
       return res.status(404).json({ success: false, error: 'Order not found' });
     }
 
-    const service = dbRepository.getServiceById(order.serviceId);
-    const items = dbRepository.getOrderItems(order.id);
-    const auditLogs = dbRepository.getOrderAuditLogs(order.id);
-    const payments = dbRepository.getOrderPayments(order.id);
+    const service = await dbRepository.getServiceById(order.serviceId);
+    const items = await dbRepository.getOrderItems(order.id);
+    const auditLogs = await dbRepository.getOrderAuditLogs(order.id);
+    const payments = await dbRepository.getOrderPayments(order.id);
 
     res.json({
       success: true,
@@ -659,7 +595,7 @@ app.get('/api/admin/orders/:id', requireStaffAuth, (req, res) => {
 });
 
 // 6. Update Order Status (Staff Action)
-app.post('/api/admin/orders/:id/status', requireStaffAuth, (req, res) => {
+app.post('/api/admin/orders/:id/status', requireStaffAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { status, note } = req.body;
@@ -680,12 +616,12 @@ app.post('/api/admin/orders/:id/status', requireStaffAuth, (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid order status specified' });
     }
 
-    const order = dbRepository.getOrderById(id);
+    const order = await dbRepository.getOrderById(id);
     if (!order) {
       return res.status(404).json({ success: false, error: 'Order not found' });
     }
 
-    const updated = dbRepository.updateOrderStatus(id, status, 'staff', note);
+    const updated = await dbRepository.updateOrderStatus(id, status, 'staff', note);
     res.json({ success: true, order: updated });
   } catch (err: any) {
     console.error('Update status error:', err);
@@ -694,7 +630,7 @@ app.post('/api/admin/orders/:id/status', requireStaffAuth, (req, res) => {
 });
 
 // 7. Staff Item Valuation & Verification Action
-app.post('/api/admin/orders/:id/items/:itemId', requireStaffAuth, (req, res) => {
+app.post('/api/admin/orders/:id/items/:itemId', requireStaffAuth, async (req, res) => {
   try {
     const { id, itemId } = req.params;
     const { agreedValueM, verified } = req.body;
@@ -703,7 +639,7 @@ app.post('/api/admin/orders/:id/items/:itemId', requireStaffAuth, (req, res) => 
       ? toHundredths(agreedValueM)
       : null;
 
-    const updatedItem = dbRepository.updateOrderItem(itemId, {
+    const updatedItem = await dbRepository.updateOrderItem(itemId, {
       agreedValueHundredths: valHundredths,
       verified: Boolean(verified),
     });
@@ -712,7 +648,7 @@ app.post('/api/admin/orders/:id/items/:itemId', requireStaffAuth, (req, res) => 
       return res.status(404).json({ success: false, error: 'Order item not found' });
     }
 
-    dbRepository.addAuditLog(
+    await dbRepository.addAuditLog(
       id,
       'staff',
       'ITEM_VALUATION_CONFIRMED',
@@ -727,9 +663,7 @@ app.post('/api/admin/orders/:id/items/:itemId', requireStaffAuth, (req, res) => 
 });
 
 // 8. Record In-Game Trade Payment (Deposit or Remaining)
-// RULE: The site must NEVER mark a payment as received automatically.
-// Only an authenticated staff member can record a payment as received.
-app.post('/api/admin/orders/:id/payments', requireStaffAuth, (req, res) => {
+app.post('/api/admin/orders/:id/payments', requireStaffAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { kind, amountM, itemsJson, staffName } = req.body;
@@ -738,7 +672,7 @@ app.post('/api/admin/orders/:id/payments', requireStaffAuth, (req, res) => {
       return res.status(400).json({ success: false, error: 'Payment kind must be "deposit" or "remaining"' });
     }
 
-    const order = dbRepository.getOrderById(id);
+    const order = await dbRepository.getOrderById(id);
     if (!order) {
       return res.status(404).json({ success: false, error: 'Order not found' });
     }
@@ -749,7 +683,7 @@ app.post('/api/admin/orders/:id/payments', requireStaffAuth, (req, res) => {
     }
 
     const recordedBy = staffName ? String(staffName).trim() : 'Staff Member';
-    const payment = dbRepository.recordPayment(
+    const payment = await dbRepository.recordPayment(
       id,
       kind,
       amountHundredths,
@@ -759,9 +693,9 @@ app.post('/api/admin/orders/:id/payments', requireStaffAuth, (req, res) => {
 
     // Update order status: deposit -> deposit_received, remaining -> fully_paid
     if (kind === 'deposit') {
-      dbRepository.updateOrderStatus(id, 'deposit_received', 'staff', `50% deposit (${amountM}M) received in-game by ${recordedBy}`);
+      await dbRepository.updateOrderStatus(id, 'deposit_received', 'staff', `50% deposit (${amountM}M) received in-game by ${recordedBy}`);
     } else if (kind === 'remaining') {
-      dbRepository.updateOrderStatus(id, 'fully_paid', 'staff', `Remaining balance (${amountM}M) received in-game by ${recordedBy}`);
+      await dbRepository.updateOrderStatus(id, 'fully_paid', 'staff', `Remaining balance (${amountM}M) received in-game by ${recordedBy}`);
     }
 
     res.json({ success: true, payment, updatedStatus: kind === 'deposit' ? 'deposit_received' : 'fully_paid' });
@@ -772,52 +706,67 @@ app.post('/api/admin/orders/:id/payments', requireStaffAuth, (req, res) => {
 });
 
 // 9. Update Internal Staff Notes
-app.post('/api/admin/orders/:id/notes', requireStaffAuth, (req, res) => {
+app.post('/api/admin/orders/:id/notes', requireStaffAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { staffNotes } = req.body;
 
-    const updated = dbRepository.updateOrderStaffNotes(id, String(staffNotes || ''));
+    const updated = await dbRepository.updateOrderStaffNotes(id, String(staffNotes || ''));
     if (!updated) {
       return res.status(404).json({ success: false, error: 'Order not found' });
     }
 
-    dbRepository.addAuditLog(id, 'staff', 'STAFF_NOTES_UPDATED', 'Staff updated internal notes');
+    await dbRepository.addAuditLog(id, 'staff', 'STAFF_NOTES_UPDATED', 'Staff updated internal notes');
     res.json({ success: true, order: updated });
   } catch (err: any) {
     res.status(500).json({ success: false, error: 'Failed to update staff notes' });
   }
 });
 
-// 10. Admin Catalog API (CRUD) for Stage 4
-app.get('/api/admin/catalog', requireStaffAuth, (_req, res) => {
+// 10. Admin Catalog API (CRUD)
+app.get('/api/admin/catalog', requireStaffAuth, async (_req, res) => {
   try {
-    const all = dbRepository.getServices();
+    const all = await dbRepository.getServices();
     res.json({ success: true, services: all });
   } catch (err: any) {
-    res.status(500).json({ success: false, error: 'Failed to fetch catalog' });
+    console.error('Failed to fetch admin catalogue error:', err);
+    res.status(500).json({ success: false, error: 'Failed to fetch admin catalogue' });
   }
 });
 
-app.post('/api/admin/catalog', requireStaffAuth, (req, res) => {
+app.post('/api/admin/catalog', requireStaffAuth, async (req, res) => {
   try {
     const { category, name, slug, description, priceM, prerequisites, exclusions, isPublished, needsConfirmation } = req.body;
-    if (!category || !name || !priceM) {
-      return res.status(400).json({ success: false, error: 'Category, name, and priceM are required' });
+    
+    if (!category || typeof category !== 'string' || !category.trim()) {
+      return res.status(400).json({ success: false, error: 'Category is required and must be a valid string.' });
+    }
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ success: false, error: 'Name is required and must be a valid string.' });
+    }
+    const parsedPrice = parseFloat(priceM);
+    if (priceM === undefined || priceM === null || isNaN(parsedPrice) || parsedPrice < 0) {
+      return res.status(400).json({ success: false, error: 'Valid non-negative trade price (priceM) is required.' });
     }
 
-    const priceHundredths = toHundredths(priceM);
-    const generatedSlug = slug || name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    const cleanCategory = String(category).trim().slice(0, 50);
+    const cleanName = String(name).trim().slice(0, 100);
+    const cleanDescription = String(description || '').trim().slice(0, 2000);
+    const priceHundredths = toHundredths(parsedPrice);
+    const baseSlug = (slug && typeof slug === 'string' && slug.trim())
+      ? slug.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+      : cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    const generatedSlug = baseSlug || `item-${Date.now()}`;
 
-    const newService = dbRepository.createService({
-      category: String(category).trim(),
-      name: String(name).trim(),
+    const newService = await dbRepository.createService({
+      category: cleanCategory,
+      name: cleanName,
       slug: generatedSlug,
-      description: String(description || '').trim(),
+      description: cleanDescription,
       priceHundredths,
       priceM: (priceHundredths / 100).toFixed(2),
-      prerequisites: prerequisites ? String(prerequisites).trim() : null,
-      exclusions: exclusions ? String(exclusions).trim() : null,
+      prerequisites: prerequisites ? String(prerequisites).trim().slice(0, 500) : null,
+      exclusions: exclusions ? String(exclusions).trim().slice(0, 500) : null,
       isPublished: Boolean(isPublished),
       needsConfirmation: Boolean(needsConfirmation),
     });
@@ -825,30 +774,51 @@ app.post('/api/admin/catalog', requireStaffAuth, (req, res) => {
     res.status(201).json({ success: true, service: newService });
   } catch (err: any) {
     console.error('Create service error:', err);
-    res.status(500).json({ success: false, error: 'Failed to create service' });
+    res.status(500).json({ success: false, error: 'Failed to create service in database' });
   }
 });
 
-app.put('/api/admin/catalog/:id', requireStaffAuth, (req, res) => {
+app.put('/api/admin/catalog/:id', requireStaffAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { category, name, description, priceM, prerequisites, exclusions, isPublished, needsConfirmation } = req.body;
 
+    const existing = await dbRepository.getServiceById(id);
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Catalogue item not found' });
+    }
+
     const updates: any = {};
-    if (category !== undefined) updates.category = String(category).trim();
-    if (name !== undefined) updates.name = String(name).trim();
-    if (description !== undefined) updates.description = String(description).trim();
+    if (category !== undefined) {
+      if (typeof category !== 'string' || !category.trim()) {
+        return res.status(400).json({ success: false, error: 'Category cannot be empty.' });
+      }
+      updates.category = String(category).trim().slice(0, 50);
+    }
+    if (name !== undefined) {
+      if (typeof name !== 'string' || !name.trim()) {
+        return res.status(400).json({ success: false, error: 'Name cannot be empty.' });
+      }
+      updates.name = String(name).trim().slice(0, 100);
+    }
+    if (description !== undefined) {
+      updates.description = String(description).trim().slice(0, 2000);
+    }
     if (priceM !== undefined) {
-      const h = toHundredths(priceM);
+      const parsed = parseFloat(priceM);
+      if (isNaN(parsed) || parsed < 0) {
+        return res.status(400).json({ success: false, error: 'Trade price (priceM) must be a non-negative number.' });
+      }
+      const h = toHundredths(parsed);
       updates.priceHundredths = h;
       updates.priceM = (h / 100).toFixed(2);
     }
-    if (prerequisites !== undefined) updates.prerequisites = prerequisites ? String(prerequisites).trim() : null;
-    if (exclusions !== undefined) updates.exclusions = exclusions ? String(exclusions).trim() : null;
+    if (prerequisites !== undefined) updates.prerequisites = prerequisites ? String(prerequisites).trim().slice(0, 500) : null;
+    if (exclusions !== undefined) updates.exclusions = exclusions ? String(exclusions).trim().slice(0, 500) : null;
     if (isPublished !== undefined) updates.isPublished = Boolean(isPublished);
     if (needsConfirmation !== undefined) updates.needsConfirmation = Boolean(needsConfirmation);
 
-    const updated = dbRepository.updateService(id, updates);
+    const updated = await dbRepository.updateService(id, updates);
     if (!updated) {
       return res.status(404).json({ success: false, error: 'Service not found' });
     }
@@ -860,25 +830,25 @@ app.put('/api/admin/catalog/:id', requireStaffAuth, (req, res) => {
   }
 });
 
-app.delete('/api/admin/catalog/:id', requireStaffAuth, (req, res) => {
+app.delete('/api/admin/catalog/:id', requireStaffAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const ok = dbRepository.deleteService(id);
+    const ok = await dbRepository.deleteService(id);
     if (!ok) {
-      return res.status(404).json({ success: false, error: 'Service not found' });
+      return res.status(404).json({ success: false, error: 'Catalogue item not found' });
     }
-    res.json({ success: true });
+    res.json({ success: true, message: 'Item deleted successfully' });
   } catch (err: any) {
     res.status(500).json({ success: false, error: 'Failed to delete service' });
   }
 });
 
 // 11. Staff Support Inbox: List & Search Enquiries
-app.get('/api/admin/enquiries', requireStaffAuth, (req, res) => {
+app.get('/api/admin/enquiries', requireStaffAuth, async (req, res) => {
   try {
     const status = req.query.status?.toString();
     const search = req.query.search?.toString();
-    const enquiries = dbRepository.listEnquiries({ status, search });
+    const enquiries = await dbRepository.listEnquiries({ status, search });
     res.json({ success: true, enquiries });
   } catch (err: any) {
     console.error('List enquiries error:', err);
@@ -887,7 +857,7 @@ app.get('/api/admin/enquiries', requireStaffAuth, (req, res) => {
 });
 
 // 12. Staff Manual Enquiry Recording (Discord DMs / In-Game tickets)
-app.post('/api/admin/enquiries', requireStaffAuth, (req, res) => {
+app.post('/api/admin/enquiries', requireStaffAuth, async (req, res) => {
   try {
     const { source, robloxUsername, customerName, discordTag, orderCodeOrId, subject, message, status, staffNotes } = req.body;
     if (!robloxUsername || !subject || !message) {
@@ -898,7 +868,7 @@ app.post('/api/admin/enquiries', requireStaffAuth, (req, res) => {
     }
 
     const cleanUsername = String(robloxUsername).trim();
-    const enquiry = dbRepository.createEnquiry({
+    const enquiry = await dbRepository.createEnquiry({
       source: ['website', 'discord', 'direct'].includes(source) ? source : 'discord',
       customerName: customerName ? String(customerName).trim().slice(0, 100) : null,
       robloxUsername: cleanUsername,
@@ -918,7 +888,7 @@ app.post('/api/admin/enquiries', requireStaffAuth, (req, res) => {
 });
 
 // 13. Update Enquiry Status & Staff Notes
-app.patch('/api/admin/enquiries/:id', requireStaffAuth, (req, res) => {
+app.patch('/api/admin/enquiries/:id', requireStaffAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { status, staffNotes } = req.body;
@@ -927,7 +897,7 @@ app.patch('/api/admin/enquiries/:id', requireStaffAuth, (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid status' });
     }
 
-    const updated = dbRepository.updateEnquiryStatus(id, status, staffNotes);
+    const updated = await dbRepository.updateEnquiryStatus(id, status, staffNotes);
     if (!updated) {
       return res.status(404).json({ success: false, error: 'Enquiry not found' });
     }
@@ -939,13 +909,13 @@ app.patch('/api/admin/enquiries/:id', requireStaffAuth, (req, res) => {
   }
 });
 
-// 14. Record Service Evidence / Screen-Share Verification
-app.post('/api/admin/orders/:id/evidence', requireStaffAuth, (req, res) => {
+// 14. Record Service Evidence / Discord Proof Notes
+app.post('/api/admin/orders/:id/evidence', requireStaffAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { evidenceType, mediaUrl, notes, customerConsentPublic, staffApprovedPublic, isOngoing, isCompleted } = req.body;
 
-    const order = dbRepository.getOrderById(id);
+    const order = await dbRepository.getOrderById(id);
     if (!order) {
       return res.status(404).json({ success: false, error: 'Order not found' });
     }
@@ -955,7 +925,7 @@ app.post('/api/admin/orders/:id/evidence', requireStaffAuth, (req, res) => {
     }
 
     const session = (req as any).staffSession;
-    const ev = dbRepository.createEvidence({
+    const ev = await dbRepository.createEvidence({
       orderId: order.id,
       serviceId: order.serviceId,
       evidenceType: ['screenshot', 'video_link', 'screen_share_session'].includes(evidenceType) ? evidenceType : 'screenshot',
@@ -969,7 +939,7 @@ app.post('/api/admin/orders/:id/evidence', requireStaffAuth, (req, res) => {
       reviewedBy: staffApprovedPublic ? session.staffId : null,
     });
 
-    dbRepository.addAuditLog(
+    await dbRepository.addAuditLog(
       id,
       'staff',
       'EVIDENCE_RECORDED',
@@ -984,10 +954,10 @@ app.post('/api/admin/orders/:id/evidence', requireStaffAuth, (req, res) => {
 });
 
 // 15. List Evidence for an Order
-app.get('/api/admin/orders/:id/evidence', requireStaffAuth, (req, res) => {
+app.get('/api/admin/orders/:id/evidence', requireStaffAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const evidence = dbRepository.getEvidenceByOrderId(id);
+    const evidence = await dbRepository.getEvidenceByOrderId(id);
     res.json({ success: true, evidence });
   } catch (err: any) {
     res.status(500).json({ success: false, error: 'Failed to retrieve evidence' });
@@ -995,13 +965,13 @@ app.get('/api/admin/orders/:id/evidence', requireStaffAuth, (req, res) => {
 });
 
 // 16. Toggle Evidence Public Approval
-app.post('/api/admin/evidence/:id/approval', requireStaffAuth, (req, res) => {
+app.post('/api/admin/evidence/:id/approval', requireStaffAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { staffApprovedPublic } = req.body;
     const session = (req as any).staffSession;
 
-    const updated = dbRepository.updateEvidenceApproval(id, Boolean(staffApprovedPublic), session.staffId);
+    const updated = await dbRepository.updateEvidenceApproval(id, Boolean(staffApprovedPublic), session.staffId);
     if (!updated) {
       return res.status(404).json({ success: false, error: 'Evidence not found' });
     }
@@ -1017,6 +987,21 @@ export default app;
 
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
+
+  // Initialize Neon PostgreSQL database schema and seed if configured
+  if (isNeonConfigured()) {
+    try {
+      console.log('Neon PostgreSQL configured. Ensuring schema tables and initial seed...');
+      await ensureNeonSchema();
+      const db = getNeonDb();
+      if (db) {
+        await ensureNeonServicesSeeded(db);
+      }
+      console.log('Neon PostgreSQL ready.');
+    } catch (err) {
+      console.error('Warning initializing Neon database at startup:', err);
+    }
+  }
 
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
@@ -1038,8 +1023,9 @@ async function startServer() {
   });
 }
 
-// Only start the standalone listener if not invoked as a serverless function (e.g. Vercel)
-if (process.env.VERCEL !== '1') {
+// Only start the standalone listener if not invoked as a serverless function (e.g. Vercel) or during testing
+const isTestExecution = process.env.NODE_ENV === 'test' || process.argv.some(arg => arg.includes('test'));
+if (process.env.VERCEL !== '1' && !isTestExecution) {
   startServer().catch((err) => {
     console.error('Failed to start server:', err);
   });

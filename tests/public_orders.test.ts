@@ -10,7 +10,7 @@ console.log('--- RUNNING STAGE 2 PUBLIC ORDER & CATALOG TESTS ---');
 
 // Test 1: Only published services are returned for customers
 {
-  const publishedServices = dbRepository.getServices({ onlyPublished: true });
+  const publishedServices = await dbRepository.getServices({ onlyPublished: true });
   assert.ok(publishedServices.length > 0, 'There are published services');
   for (const s of publishedServices) {
     assert.equal(s.isPublished, true, `Service "${s.name}" must have isPublished=true`);
@@ -24,12 +24,12 @@ console.log('✓ Public catalog strictly filters unpublished and uncertain servi
 
 // Test 2: Order Creation Invariant & Item Attachment
 {
-  const targetService = dbRepository.getServices({ onlyPublished: true })[0];
+  const targetService = (await dbRepository.getServices({ onlyPublished: true }))[0];
   const { depositHundredths, remainingHundredths } = calculateDepositAndRemaining(targetService.priceHundredths);
   const token = generatePublicToken();
-  const code = dbRepository.getNextOrderCode();
+  const code = await dbRepository.getNextOrderCode();
 
-  const { order, items } = dbRepository.createOrder(
+  const { order, items } = await dbRepository.createOrder(
     {
       publicToken: token,
       orderCode: code,
@@ -59,12 +59,12 @@ console.log('✓ Public catalog strictly filters unpublished and uncertain servi
   assert.equal(items[0].verified, false);
 
   // Retrieval by public token
-  const retrieved = dbRepository.getOrderByPublicToken(token);
+  const retrieved = await dbRepository.getOrderByPublicToken(token);
   assert.ok(retrieved, 'Order can be retrieved by unguessable publicToken');
   assert.equal(retrieved.id, order.id);
 
   // Audit log was created
-  const auditLogs = dbRepository.getOrderAuditLogs(order.id);
+  const auditLogs = await dbRepository.getOrderAuditLogs(order.id);
   assert.ok(auditLogs.length >= 1, 'Initial customer order audit log was recorded');
   assert.equal(auditLogs[0].action, 'ORDER_SUBMITTED');
 }

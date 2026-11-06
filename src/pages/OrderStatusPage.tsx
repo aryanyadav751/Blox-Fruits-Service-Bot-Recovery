@@ -330,6 +330,28 @@ export const OrderStatusPage: React.FC<OrderStatusPageProps> = ({
               </div>
             </div>
 
+            {/* Discord Carry Proof & Coordination Banner */}
+            <div className="bg-gradient-to-r from-indigo-950/40 to-slate-900 border border-indigo-500/20 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+              <div className="space-y-0.5">
+                <span className="font-semibold text-white flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse" />
+                  Discord Proof & Meetup Coordination
+                </span>
+                <p className="text-[11px] text-slate-400">
+                  Screenshots, video proof of completion, and live Roblox screen-sharing are coordinated manually via Discord. Join with Order Code <strong className="text-amber-400 font-mono">{order.orderCode}</strong>.
+                </p>
+              </div>
+              <a
+                href={import.meta.env.VITE_DISCORD_INVITE_URL || 'https://discord.gg/placeholder-blox-fruit-services'}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="shrink-0 inline-flex items-center gap-1 px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition-colors"
+              >
+                <span>Join Discord</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            </div>
+
             {/* Copyable Bookmark URL */}
             <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-3">
               <button

@@ -73,6 +73,28 @@ export function ProofsPage({ onNavigate }: ProofsPageProps) {
         </p>
       </div>
 
+      {/* Discord Proof Sharing Instruction Card */}
+      <div className="bg-gradient-to-r from-indigo-950/60 to-slate-900 border border-indigo-500/30 rounded-2xl p-5 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-indigo-400 text-xs font-bold uppercase tracking-wider">
+            <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse" />
+            Discord-Based Proof Management
+          </div>
+          <p className="text-xs text-slate-300">
+            All carry screenshots, videos, and live Roblox screen-sharing are coordinated and shared directly in our Discord community. Only staff-reviewed proofs with customer consent appear on this public showcase.
+          </p>
+        </div>
+        <a
+          href={import.meta.env.VITE_DISCORD_INVITE_URL || 'https://discord.gg/placeholder-blox-fruit-services'}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="shrink-0 inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition-colors shadow-md shadow-indigo-600/20"
+        >
+          <span>Join Discord Server</span>
+          <ExternalLink className="w-3.5 h-3.5" />
+        </a>
+      </div>
+
       {/* Trust & Privacy Notice Card */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 sm:p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
         <div className="flex items-center gap-3">

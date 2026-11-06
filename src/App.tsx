@@ -145,18 +145,23 @@ export default function App() {
         )}
 
         {/* ADMIN ROUTES */}
-        {pathOnly === '/admin/login' && (
-          <AdminLoginPage
-            onLoginSuccess={() => {
-              setIsAdminAuthenticated(true);
-              navigate('/admin');
-            }}
-            onNavigate={navigate}
-          />
+        {pathOnly.startsWith('/admin') && checkingAuth && (
+          <div className="min-h-[50vh] flex flex-col items-center justify-center space-y-3">
+            <div className="w-8 h-8 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+            <p className="text-xs font-mono text-slate-400">Verifying staff session...</p>
+          </div>
         )}
 
-        {pathOnly === '/admin' && (
-          !isAdminAuthenticated && !checkingAuth ? (
+        {pathOnly === '/admin/login' && !checkingAuth && (
+          isAdminAuthenticated ? (
+            <AdminDashboardPage
+              onNavigate={navigate}
+              onLogout={handleAdminLogout}
+              onServiceChange={() => {
+                api.getServices().then(setServices).catch(console.error);
+              }}
+            />
+          ) : (
             <AdminLoginPage
               onLoginSuccess={() => {
                 setIsAdminAuthenticated(true);
@@ -164,16 +169,32 @@ export default function App() {
               }}
               onNavigate={navigate}
             />
+          )
+        )}
+
+        {(pathOnly === '/admin' || pathOnly === '/admin/catalog' || pathOnly.startsWith('/admin/catalog')) && !checkingAuth && (
+          !isAdminAuthenticated ? (
+            <AdminLoginPage
+              onLoginSuccess={() => {
+                setIsAdminAuthenticated(true);
+                navigate(pathOnly);
+              }}
+              onNavigate={navigate}
+            />
           ) : (
             <AdminDashboardPage
+              initialTab={pathOnly.startsWith('/admin/catalog') ? 'catalog' : 'orders'}
               onNavigate={navigate}
               onLogout={handleAdminLogout}
+              onServiceChange={() => {
+                api.getServices().then(setServices).catch(console.error);
+              }}
             />
           )
         )}
 
-        {pathOnly.startsWith('/admin/orders/') && (
-          !isAdminAuthenticated && !checkingAuth ? (
+        {pathOnly.startsWith('/admin/orders/') && !checkingAuth && (
+          !isAdminAuthenticated ? (
             <AdminLoginPage
               onLoginSuccess={() => {
                 setIsAdminAuthenticated(true);
@@ -186,36 +207,6 @@ export default function App() {
               onNavigate={navigate}
             />
           )
-        )}
-
-        {pathOnly === '/admin/catalog' && (
-          <div className="max-w-4xl mx-auto px-4 py-16 text-center space-y-4">
-            <h2 className="text-xl font-bold text-white">Staff Catalog Management</h2>
-            <p className="text-xs text-slate-400">
-              Catalog CRUD & Publishing workflow is coming up in Stage 4.
-            </p>
-            <button
-              onClick={() => navigate('/admin')}
-              className="px-4 py-2 bg-slate-800 text-xs font-semibold rounded-lg text-slate-300 hover:text-white"
-            >
-              Back to Dashboard
-            </button>
-          </div>
-        )}
-
-        {pathOnly === '/admin/catalog/audit' && (
-          <div className="max-w-4xl mx-auto px-4 py-16 text-center space-y-4">
-            <h2 className="text-xl font-bold text-white">Uncertain Items Audit</h2>
-            <p className="text-xs text-slate-400">
-              Unpublished item audit & publishing workflow is coming up in Stage 4.
-            </p>
-            <button
-              onClick={() => navigate('/admin')}
-              className="px-4 py-2 bg-slate-800 text-xs font-semibold rounded-lg text-slate-300 hover:text-white"
-            >
-              Back to Dashboard
-            </button>
-          </div>
         )}
       </main>
 

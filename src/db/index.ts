@@ -1,8 +1,11 @@
 import fs from 'fs';
 import path from 'path';
-import { INITIAL_SERVICES, ServiceSeedItem } from './seed-data.ts';
+import { randomUUID } from 'node:crypto';
+import { eq, desc, and, sql } from 'drizzle-orm';
+import { INITIAL_SERVICES } from './seed-data.ts';
 import { toHundredths } from '../lib/calculator.ts';
-import { ensureDatabaseConfigured } from './neon.ts';
+import { getNeonDb, isNeonConfigured, ensureDatabaseConfigured, ensureNeonSchema, areNeonTablesAvailable } from './neon.ts';
+import * as schema from './schema.ts';
 
 export interface ServiceRecord {
   id: string;
@@ -59,9 +62,13 @@ export interface OrderItemRecord {
   verified: boolean;
 }
 
-export type OrderItemInput = Omit<OrderItemRecord, 'id' | 'orderId' | 'verified'> & {
+export interface OrderItemInput {
+  itemName: string;
+  quantity: number;
+  proposedValueHundredths: number;
+  agreedValueHundredths?: number | null;
   verified?: boolean;
-};
+}
 
 export interface OrderAuditRecord {
   id: string;
@@ -77,14 +84,14 @@ export interface PaymentRecord {
   orderId: string;
   kind: 'deposit' | 'remaining';
   amountHundredths: number;
-  itemsJson: string; // JSON array of items accepted
+  itemsJson: string;
   recordedBy: string;
   recordedAt: string;
 }
 
 export interface EnquiryRecord {
   id: string;
-  source: 'website' | 'discord' | 'direct';
+  source: string; // 'website' | 'discord' | 'direct'
   customerName?: string | null;
   robloxUsername: string;
   discordTag?: string | null;
@@ -124,6 +131,123 @@ interface DatabaseState {
   counter: number;
 }
 
+// Helpers to map Drizzle query results to canonical Record types
+function mapService(row: any): ServiceRecord {
+  return {
+    id: row.id,
+    category: row.category,
+    slug: row.slug,
+    name: row.name,
+    description: row.description,
+    priceHundredths: Number(row.priceHundredths),
+    priceM: typeof row.priceM === 'number' ? row.priceM.toFixed(2) : String(row.priceM),
+    prerequisites: row.prerequisites || null,
+    exclusions: row.exclusions || null,
+    isPublished: Boolean(row.isPublished),
+    needsConfirmation: Boolean(row.needsConfirmation),
+    createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
+    updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : String(row.updatedAt),
+  };
+}
+
+function mapOrder(row: any): OrderRecord {
+  return {
+    id: row.id,
+    publicToken: row.publicToken,
+    orderCode: row.orderCode,
+    serviceId: row.serviceId,
+    robloxUsername: row.robloxUsername,
+    timezone: row.timezone,
+    availability: row.availability,
+    paymentType: row.paymentType as any,
+    status: row.status as any,
+    totalPriceHundredths: Number(row.totalPriceHundredths),
+    depositHundredths: Number(row.depositHundredths),
+    remainingHundredths: Number(row.remainingHundredths),
+    customerNote: row.customerNote || null,
+    staffNotes: row.staffNotes || null,
+    consentPublicProofs: Boolean(row.consentPublicProofs),
+    createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
+    updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : String(row.updatedAt),
+  };
+}
+
+function mapOrderItem(row: any): OrderItemRecord {
+  return {
+    id: row.id,
+    orderId: row.orderId,
+    itemName: row.itemName,
+    quantity: Number(row.quantity),
+    proposedValueHundredths: Number(row.proposedValueHundredths),
+    agreedValueHundredths: row.agreedValueHundredths !== null && row.agreedValueHundredths !== undefined
+      ? Number(row.agreedValueHundredths)
+      : null,
+    verified: Boolean(row.verified),
+  };
+}
+
+function mapAudit(row: any): OrderAuditRecord {
+  return {
+    id: row.id,
+    orderId: row.orderId,
+    actor: row.actor,
+    action: row.action,
+    note: row.note || null,
+    createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
+  };
+}
+
+function mapPayment(row: any): PaymentRecord {
+  return {
+    id: row.id,
+    orderId: row.orderId,
+    kind: row.kind as any,
+    amountHundredths: Number(row.amountHundredths),
+    itemsJson: row.itemsJson,
+    recordedBy: row.recordedBy,
+    recordedAt: row.recordedAt instanceof Date ? row.recordedAt.toISOString() : String(row.recordedAt),
+  };
+}
+
+function mapEnquiry(row: any): EnquiryRecord {
+  return {
+    id: row.id,
+    source: row.source,
+    customerName: row.customerName || null,
+    robloxUsername: row.robloxUsername,
+    discordTag: row.discordTag || null,
+    orderCodeOrId: row.orderCodeOrId || null,
+    subject: row.subject,
+    message: row.message,
+    status: row.status as any,
+    staffNotes: row.staffNotes || null,
+    createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
+    updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : String(row.updatedAt),
+  };
+}
+
+function mapEvidence(row: any): EvidenceRecord {
+  return {
+    id: row.id,
+    orderId: row.orderId,
+    serviceId: row.serviceId,
+    evidenceType: row.evidenceType as any,
+    mediaUrl: row.mediaUrl,
+    notes: row.notes || null,
+    customerConsentPublic: Boolean(row.customerConsentPublic),
+    staffApprovedPublic: Boolean(row.staffApprovedPublic),
+    isOngoing: Boolean(row.isOngoing),
+    isCompleted: Boolean(row.isCompleted),
+    createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
+    reviewedAt: row.reviewedAt ? (row.reviewedAt instanceof Date ? row.reviewedAt.toISOString() : String(row.reviewedAt)) : null,
+    reviewedBy: row.reviewedBy || null,
+  };
+}
+
+// ============================================================================
+// Local Test & Development In-Memory Store
+// strictly prohibited in production via ensureDatabaseConfigured()
+// ============================================================================
 const DATA_DIR = path.resolve(process.cwd(), '.data');
 const DATA_FILE = path.join(DATA_DIR, 'db.json');
 
@@ -142,6 +266,31 @@ function loadState(): DatabaseState {
       if (parsed && Array.isArray(parsed.services)) {
         if (!Array.isArray(parsed.enquiries)) parsed.enquiries = [];
         if (!Array.isArray(parsed.evidence)) parsed.evidence = [];
+        const existingIds = new Set(parsed.services.map((s: any) => s.id));
+        let updated = false;
+        for (const s of INITIAL_SERVICES) {
+          if (!existingIds.has(s.id)) {
+            parsed.services.push({
+              id: s.id,
+              category: s.category,
+              slug: s.slug,
+              name: s.name,
+              description: s.description,
+              priceHundredths: toHundredths(s.priceM),
+              priceM: s.priceM.toFixed(2),
+              prerequisites: s.prerequisites || null,
+              exclusions: s.exclusions || null,
+              isPublished: s.isPublished,
+              needsConfirmation: s.needsConfirmation,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            });
+            updated = true;
+          }
+        }
+        if (updated) {
+          saveState(parsed);
+        }
         return parsed;
       }
     } catch (e) {
@@ -149,7 +298,6 @@ function loadState(): DatabaseState {
     }
   }
 
-  // Initial seed
   const seededServices: ServiceRecord[] = INITIAL_SERVICES.map((s) => ({
     id: s.id,
     category: s.category,
@@ -188,7 +336,6 @@ function saveState(state: DatabaseState) {
   fs.renameSync(tmpFile, DATA_FILE);
 }
 
-// Memory cache + write-through
 let stateCache: DatabaseState | null = null;
 function getState(): DatabaseState {
   ensureDatabaseConfigured();
@@ -204,9 +351,103 @@ function commitState() {
   }
 }
 
+// Auto-seed services into Neon PostgreSQL if table is empty
+let neonServicesSeeded = false;
+let neonServicesSeedPromise: Promise<void> | null = null;
+
+export async function ensureNeonServicesSeeded(db: NonNullable<ReturnType<typeof getNeonDb>>): Promise<void> {
+  if (neonServicesSeeded) return;
+  if (neonServicesSeedPromise) return neonServicesSeedPromise;
+
+  neonServicesSeedPromise = (async () => {
+    try {
+      // 1. Ensure all Neon PostgreSQL tables and indexes exist before querying
+      await ensureNeonSchema();
+
+      // If tables are not available in the database (e.g. role lacks CREATE on public), skip queries
+      if (!areNeonTablesAvailable()) {
+        return;
+      }
+
+      // 2. Fetch existing service IDs to avoid duplicating or missing seed items
+      const existing = await db.select({ id: schema.services.id }).from(schema.services);
+      const existingIds = new Set(existing.map((s) => s.id));
+
+      const missing = INITIAL_SERVICES.filter((s) => !existingIds.has(s.id));
+      if (missing.length > 0) {
+        const now = new Date();
+        const values = missing.map((s) => ({
+          id: s.id,
+          category: s.category,
+          slug: s.slug,
+          name: s.name,
+          description: s.description,
+          priceHundredths: toHundredths(s.priceM),
+          priceM: s.priceM.toFixed(2),
+          prerequisites: s.prerequisites || null,
+          exclusions: s.exclusions || null,
+          isPublished: s.isPublished,
+          needsConfirmation: s.needsConfirmation,
+          createdAt: now,
+          updatedAt: now,
+        }));
+        // Insert in batches of 20 for efficient network execution
+        for (let i = 0; i < values.length; i += 20) {
+          await db.insert(schema.services).values(values.slice(i, i + 20));
+        }
+      }
+      neonServicesSeeded = true;
+    } catch (err: any) {
+      neonServicesSeeded = false;
+      const fullError = `${err?.message || ''} ${err?.cause?.message || ''} ${String(err || '')}`;
+      if (fullError.includes('permission denied') || fullError.includes('does not exist')) {
+        console.warn('Neon services seed skipped due to database permissions or missing table.');
+        if (process.env.NODE_ENV !== 'production') {
+          return;
+        }
+      }
+      console.error('Error auto-seeding Neon services:', err);
+      throw err;
+    } finally {
+      neonServicesSeedPromise = null;
+    }
+  })();
+
+  return neonServicesSeedPromise;
+}
+
+// ============================================================================
+// Core Database Repository
+// Automatically routes all operations to Neon PostgreSQL when configured.
+// Fails safely in production if DATABASE_URL is missing.
+// ============================================================================
 export const dbRepository = {
   // Services
-  getServices(options?: { onlyPublished?: boolean; onlyUncertain?: boolean }): ServiceRecord[] {
+  async getServices(options?: { onlyPublished?: boolean; onlyUncertain?: boolean }): Promise<ServiceRecord[]> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      await ensureNeonServicesSeeded(db);
+      if (areNeonTablesAvailable()) {
+        try {
+          let rows = await db.select().from(schema.services);
+          if (options?.onlyPublished) {
+            rows = rows.filter(item => item.isPublished);
+          }
+          if (options?.onlyUncertain) {
+            rows = rows.filter(item => item.needsConfirmation);
+          }
+          return rows.map(mapService);
+        } catch (err: any) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.warn('Neon getServices error in dev, falling back to local catalogue:', err?.cause?.message || err?.message);
+          } else {
+            throw err;
+          }
+        }
+      }
+    }
+
     const s = getState();
     let result = [...s.services];
     if (options?.onlyPublished) {
@@ -218,29 +459,110 @@ export const dbRepository = {
     return result;
   },
 
-  getServiceById(id: string): ServiceRecord | undefined {
+  async getServiceById(id: string): Promise<ServiceRecord | undefined> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      await ensureNeonServicesSeeded(db);
+      if (areNeonTablesAvailable()) {
+        try {
+          const rows = await db.select().from(schema.services).where(eq(schema.services.id, id));
+          return rows[0] ? mapService(rows[0]) : undefined;
+        } catch (err: any) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.warn('Neon getServiceById error in dev, falling back to local store:', err?.cause?.message || err?.message);
+          } else {
+            throw err;
+          }
+        }
+      }
+    }
     return getState().services.find(s => s.id === id);
   },
 
-  getServiceBySlug(slug: string): ServiceRecord | undefined {
+  async getServiceBySlug(slug: string): Promise<ServiceRecord | undefined> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      await ensureNeonServicesSeeded(db);
+      if (areNeonTablesAvailable()) {
+        try {
+          const rows = await db.select().from(schema.services).where(eq(schema.services.slug, slug));
+          return rows[0] ? mapService(rows[0]) : undefined;
+        } catch (err: any) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.warn('Neon getServiceBySlug error in dev, falling back to local store:', err?.cause?.message || err?.message);
+          } else {
+            throw err;
+          }
+        }
+      }
+    }
     return getState().services.find(s => s.slug === slug);
   },
 
-  createService(data: Omit<ServiceRecord, 'id' | 'createdAt' | 'updatedAt'>): ServiceRecord {
+  async createService(data: Omit<ServiceRecord, 'id' | 'createdAt' | 'updatedAt'>): Promise<ServiceRecord> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    const id = `svc-${Date.now()}-${randomUUID().slice(0, 6)}`;
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    if (db) {
+      const row = {
+        id,
+        category: data.category,
+        slug: data.slug,
+        name: data.name,
+        description: data.description,
+        priceHundredths: data.priceHundredths,
+        priceM: data.priceM,
+        prerequisites: data.prerequisites || null,
+        exclusions: data.exclusions || null,
+        isPublished: Boolean(data.isPublished),
+        needsConfirmation: Boolean(data.needsConfirmation),
+        createdAt: now,
+        updatedAt: now,
+      };
+      await db.insert(schema.services).values(row);
+      return mapService({ ...row, createdAt: nowIso, updatedAt: nowIso });
+    }
+
     const s = getState();
-    const id = `svc-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const newService: ServiceRecord = {
       ...data,
       id,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
     s.services.push(newService);
     commitState();
     return newService;
   },
 
-  updateService(id: string, updates: Partial<Omit<ServiceRecord, 'id' | 'createdAt'>>): ServiceRecord | null {
+  async updateService(id: string, updates: Partial<Omit<ServiceRecord, 'id' | 'createdAt'>>): Promise<ServiceRecord | null> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    const now = new Date();
+
+    if (db) {
+      const updateData: any = { updatedAt: now };
+      if (updates.category !== undefined) updateData.category = updates.category;
+      if (updates.slug !== undefined) updateData.slug = updates.slug;
+      if (updates.name !== undefined) updateData.name = updates.name;
+      if (updates.description !== undefined) updateData.description = updates.description;
+      if (updates.priceHundredths !== undefined) updateData.priceHundredths = updates.priceHundredths;
+      if (updates.priceM !== undefined) updateData.priceM = updates.priceM;
+      if (updates.prerequisites !== undefined) updateData.prerequisites = updates.prerequisites;
+      if (updates.exclusions !== undefined) updateData.exclusions = updates.exclusions;
+      if (updates.isPublished !== undefined) updateData.isPublished = updates.isPublished;
+      if (updates.needsConfirmation !== undefined) updateData.needsConfirmation = updates.needsConfirmation;
+
+      await db.update(schema.services).set(updateData).where(eq(schema.services.id, id));
+      const [updated] = await db.select().from(schema.services).where(eq(schema.services.id, id));
+      return updated ? mapService(updated) : null;
+    }
+
     const s = getState();
     const index = s.services.findIndex(item => item.id === id);
     if (index === -1) return null;
@@ -248,13 +570,22 @@ export const dbRepository = {
     s.services[index] = {
       ...s.services[index],
       ...updates,
-      updatedAt: new Date().toISOString(),
+      updatedAt: now.toISOString(),
     };
     commitState();
     return s.services[index];
   },
 
-  deleteService(id: string): boolean {
+  async deleteService(id: string): Promise<boolean> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      const [existing] = await db.select().from(schema.services).where(eq(schema.services.id, id));
+      if (!existing) return false;
+      await db.delete(schema.services).where(eq(schema.services.id, id));
+      return true;
+    }
+
     const s = getState();
     const lenBefore = s.services.length;
     s.services = s.services.filter(item => item.id !== id);
@@ -266,32 +597,98 @@ export const dbRepository = {
   },
 
   // Orders
-  getNextOrderCode(): string {
+  async getNextOrderCode(): Promise<string> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      const res = await db.select({ count: sql<number>`count(*)::int` }).from(schema.orders);
+      const count = Number(res[0]?.count || 0) + 1;
+      return `BFS-${1040 + count}`;
+    }
+
     const s = getState();
     s.counter += 1;
     commitState();
     return `BFS-${s.counter}`;
   },
 
-  createOrder(
+  async createOrder(
     order: Omit<OrderRecord, 'id' | 'createdAt' | 'updatedAt'>,
     items: OrderItemInput[]
-  ): { order: OrderRecord; items: OrderItemRecord[] } {
-    const s = getState();
-    const orderId = `ord-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-    const now = new Date().toISOString();
+  ): Promise<{ order: OrderRecord; items: OrderItemRecord[] }> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    const orderId = `ord-${Date.now()}-${randomUUID().slice(0, 7)}`;
+    const now = new Date();
+    const nowIso = now.toISOString();
 
+    if (db) {
+      const orderRow = {
+        id: orderId,
+        publicToken: order.publicToken,
+        orderCode: order.orderCode,
+        serviceId: order.serviceId,
+        robloxUsername: order.robloxUsername,
+        timezone: order.timezone,
+        availability: order.availability,
+        paymentType: order.paymentType,
+        status: order.status || 'pending_review',
+        totalPriceHundredths: order.totalPriceHundredths,
+        depositHundredths: order.depositHundredths,
+        remainingHundredths: order.remainingHundredths,
+        customerNote: order.customerNote || null,
+        staffNotes: order.staffNotes || null,
+        consentPublicProofs: Boolean(order.consentPublicProofs),
+        createdAt: now,
+        updatedAt: now,
+      };
+      await db.insert(schema.orders).values(orderRow);
+
+      const createdItems: OrderItemRecord[] = [];
+      for (let idx = 0; idx < items.length; idx++) {
+        const it = items[idx];
+        const itemId = `item-${Date.now()}-${idx}-${randomUUID().slice(0, 5)}`;
+        const itemRow = {
+          id: itemId,
+          orderId,
+          itemName: it.itemName,
+          quantity: it.quantity,
+          proposedValueHundredths: it.proposedValueHundredths,
+          agreedValueHundredths: it.agreedValueHundredths ?? null,
+          verified: it.verified ?? false,
+        };
+        await db.insert(schema.orderItems).values(itemRow);
+        createdItems.push(itemRow);
+      }
+
+      await db.insert(schema.orderAudit).values({
+        id: `aud-${Date.now()}-${randomUUID().slice(0, 5)}`,
+        orderId,
+        actor: 'customer',
+        action: 'ORDER_SUBMITTED',
+        note: `Order submitted for ${order.paymentType} payment. Total: ${(order.totalPriceHundredths / 100).toFixed(2)}M.`,
+        createdAt: now,
+      });
+
+      return {
+        order: mapOrder({ ...orderRow, createdAt: nowIso, updatedAt: nowIso }),
+        items: createdItems,
+      };
+    }
+
+    // In-memory test fallback
+    const s = getState();
     const newOrder: OrderRecord = {
       ...order,
       consentPublicProofs: Boolean(order.consentPublicProofs),
       id: orderId,
-      createdAt: now,
-      updatedAt: now,
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
 
     const newItems: OrderItemRecord[] = items.map((it, idx) => ({
       ...it,
-      id: `item-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 5)}`,
+      id: `item-${Date.now()}-${idx}-${randomUUID().slice(0, 5)}`,
       orderId,
       verified: it.verified ?? false,
     }));
@@ -299,99 +696,190 @@ export const dbRepository = {
     s.orders.push(newOrder);
     s.orderItems.push(...newItems);
 
-    // Initial audit entry
     s.orderAudit.push({
-      id: `aud-${Date.now()}`,
+      id: `aud-${Date.now()}-${randomUUID().slice(0, 5)}`,
       orderId,
       actor: 'customer',
       action: 'ORDER_SUBMITTED',
       note: `Order submitted for ${order.paymentType} payment. Total: ${(order.totalPriceHundredths / 100).toFixed(2)}M.`,
-      createdAt: now,
+      createdAt: nowIso,
     });
 
     commitState();
     return { order: newOrder, items: newItems };
   },
 
-  getOrderById(id: string): OrderRecord | undefined {
+  async getOrderById(id: string): Promise<OrderRecord | undefined> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      const rows = await db.select().from(schema.orders).where(eq(schema.orders.id, id));
+      return rows[0] ? mapOrder(rows[0]) : undefined;
+    }
     return getState().orders.find(o => o.id === id);
   },
 
-  getOrderByPublicToken(token: string): OrderRecord | undefined {
+  async getOrderByPublicToken(token: string): Promise<OrderRecord | undefined> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      const rows = await db.select().from(schema.orders).where(eq(schema.orders.publicToken, token));
+      return rows[0] ? mapOrder(rows[0]) : undefined;
+    }
     return getState().orders.find(o => o.publicToken === token);
   },
 
-  getOrderByCode(code: string): OrderRecord | undefined {
-    return getState().orders.find(o => o.orderCode.toUpperCase() === code.toUpperCase().trim());
+  async getOrderByCode(code: string): Promise<OrderRecord | undefined> {
+    ensureDatabaseConfigured();
+    const cleanCode = code.toUpperCase().trim();
+    const db = getNeonDb();
+    if (db) {
+      const rows = await db.select().from(schema.orders).where(eq(schema.orders.orderCode, cleanCode));
+      return rows[0] ? mapOrder(rows[0]) : undefined;
+    }
+    return getState().orders.find(o => o.orderCode.toUpperCase() === cleanCode);
   },
 
-  listOrders(filters?: { status?: string; search?: string }): OrderRecord[] {
+  async listOrders(filters?: { status?: string; search?: string }): Promise<OrderRecord[]> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      let rows = await db.select().from(schema.orders).orderBy(desc(schema.orders.createdAt));
+      if (filters?.status && filters.status !== 'all') {
+        rows = rows.filter(o => o.status === filters.status);
+      }
+      if (filters?.search) {
+        const q = filters.search.toLowerCase().trim();
+        rows = rows.filter(o =>
+          o.orderCode.toLowerCase().includes(q) ||
+          o.robloxUsername.toLowerCase().includes(q)
+        );
+      }
+      return rows.map(mapOrder);
+    }
+
     const s = getState();
     let result = [...s.orders];
-
     if (filters?.status && filters.status !== 'all') {
       result = result.filter(o => o.status === filters.status);
     }
-
     if (filters?.search) {
       const q = filters.search.toLowerCase().trim();
-      result = result.filter(o => 
+      result = result.filter(o =>
         o.orderCode.toLowerCase().includes(q) ||
         o.robloxUsername.toLowerCase().includes(q)
       );
     }
-
-    // Newest first
     result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     return result;
   },
 
-  updateOrderStatus(
+  async updateOrderStatus(
     orderId: string, 
     newStatus: OrderRecord['status'], 
     actor: 'staff' | 'system', 
     note?: string
-  ): OrderRecord | null {
+  ): Promise<OrderRecord | null> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    if (db) {
+      const [existing] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
+      if (!existing) return null;
+      const oldStatus = existing.status;
+
+      await db.update(schema.orders)
+        .set({ status: newStatus, updatedAt: now })
+        .where(eq(schema.orders.id, orderId));
+
+      await db.insert(schema.orderAudit).values({
+        id: `aud-${Date.now()}-${randomUUID().slice(0, 5)}`,
+        orderId,
+        actor,
+        action: `STATUS_CHANGE_${oldStatus.toUpperCase()}_TO_${newStatus.toUpperCase()}`,
+        note: note || `Status changed to ${newStatus}`,
+        createdAt: now,
+      });
+
+      const [updated] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
+      return updated ? mapOrder(updated) : null;
+    }
+
     const s = getState();
     const order = s.orders.find(o => o.id === orderId);
     if (!order) return null;
 
     const oldStatus = order.status;
     order.status = newStatus;
-    order.updatedAt = new Date().toISOString();
+    order.updatedAt = nowIso;
 
     s.orderAudit.push({
-      id: `aud-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+      id: `aud-${Date.now()}-${randomUUID().slice(0, 5)}`,
       orderId,
       actor,
       action: `STATUS_CHANGE_${oldStatus.toUpperCase()}_TO_${newStatus.toUpperCase()}`,
       note: note || `Status changed to ${newStatus}`,
-      createdAt: new Date().toISOString(),
+      createdAt: nowIso,
     });
 
     commitState();
     return order;
   },
 
-  updateOrderStaffNotes(orderId: string, staffNotes: string): OrderRecord | null {
+  async updateOrderStaffNotes(orderId: string, staffNotes: string): Promise<OrderRecord | null> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    const now = new Date();
+
+    if (db) {
+      await db.update(schema.orders)
+        .set({ staffNotes, updatedAt: now })
+        .where(eq(schema.orders.id, orderId));
+      const [updated] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
+      return updated ? mapOrder(updated) : null;
+    }
+
     const s = getState();
     const order = s.orders.find(o => o.id === orderId);
     if (!order) return null;
     order.staffNotes = staffNotes;
-    order.updatedAt = new Date().toISOString();
+    order.updatedAt = now.toISOString();
     commitState();
     return order;
   },
 
   // Order Items
-  getOrderItems(orderId: string): OrderItemRecord[] {
+  async getOrderItems(orderId: string): Promise<OrderItemRecord[]> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      const rows = await db.select().from(schema.orderItems).where(eq(schema.orderItems.orderId, orderId));
+      return rows.map(mapOrderItem);
+    }
     return getState().orderItems.filter(i => i.orderId === orderId);
   },
 
-  updateOrderItem(
+  async updateOrderItem(
     itemId: string, 
     updates: { agreedValueHundredths?: number | null; verified?: boolean }
-  ): OrderItemRecord | null {
+  ): Promise<OrderItemRecord | null> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      const updateData: any = {};
+      if (updates.agreedValueHundredths !== undefined) {
+        updateData.agreedValueHundredths = updates.agreedValueHundredths;
+      }
+      if (updates.verified !== undefined) {
+        updateData.verified = updates.verified;
+      }
+      await db.update(schema.orderItems).set(updateData).where(eq(schema.orderItems.id, itemId));
+      const [row] = await db.select().from(schema.orderItems).where(eq(schema.orderItems.id, itemId));
+      return row ? mapOrderItem(row) : null;
+    }
+
     const s = getState();
     const item = s.orderItems.find(i => i.id === itemId);
     if (!item) return null;
@@ -408,89 +896,195 @@ export const dbRepository = {
   },
 
   // Audit Logs
-  addAuditLog(orderId: string, actor: 'customer' | 'staff' | 'system', action: string, note?: string) {
+  async addAuditLog(orderId: string, actor: 'customer' | 'staff' | 'system', action: string, note?: string): Promise<OrderAuditRecord> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    const id = `aud-${Date.now()}-${randomUUID().slice(0, 5)}`;
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    if (db) {
+      const row = {
+        id,
+        orderId,
+        actor,
+        action,
+        note: note || null,
+        createdAt: now,
+      };
+      await db.insert(schema.orderAudit).values(row);
+      return mapAudit({ ...row, createdAt: nowIso });
+    }
+
     const s = getState();
     const entry: OrderAuditRecord = {
-      id: `aud-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+      id,
       orderId,
       actor,
       action,
       note: note || null,
-      createdAt: new Date().toISOString(),
+      createdAt: nowIso,
     };
     s.orderAudit.push(entry);
     commitState();
     return entry;
   },
 
-  getOrderAuditLogs(orderId: string): OrderAuditRecord[] {
+  async getOrderAuditLogs(orderId: string): Promise<OrderAuditRecord[]> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      const rows = await db.select().from(schema.orderAudit)
+        .where(eq(schema.orderAudit.orderId, orderId))
+        .orderBy(schema.orderAudit.createdAt);
+      return rows.map(mapAudit);
+    }
+
     return getState().orderAudit
       .filter(a => a.orderId === orderId)
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   },
 
   // Payments
-  recordPayment(
+  async recordPayment(
     orderId: string, 
     kind: 'deposit' | 'remaining', 
     amountHundredths: number, 
     itemsJson: string, 
     recordedBy: string
-  ): PaymentRecord {
+  ): Promise<PaymentRecord> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    const id = `pay-${Date.now()}-${randomUUID().slice(0, 5)}`;
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    if (db) {
+      const row = {
+        id,
+        orderId,
+        kind,
+        amountHundredths,
+        itemsJson,
+        recordedBy,
+        recordedAt: now,
+      };
+      await db.insert(schema.payments).values(row);
+
+      await db.insert(schema.orderAudit).values({
+        id: `aud-${Date.now()}-${randomUUID().slice(0, 5)}`,
+        orderId,
+        actor: 'staff',
+        action: `PAYMENT_RECORDED_${kind.toUpperCase()}`,
+        note: `Staff '${recordedBy}' recorded ${kind} payment of ${(amountHundredths / 100).toFixed(2)}M. Items: ${itemsJson}`,
+        createdAt: now,
+      });
+
+      return mapPayment({ ...row, recordedAt: nowIso });
+    }
+
     const s = getState();
     const payment: PaymentRecord = {
-      id: `pay-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+      id,
       orderId,
       kind,
       amountHundredths,
       itemsJson,
       recordedBy,
-      recordedAt: new Date().toISOString(),
+      recordedAt: nowIso,
     };
     s.payments.push(payment);
 
     s.orderAudit.push({
-      id: `aud-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+      id: `aud-${Date.now()}-${randomUUID().slice(0, 5)}`,
       orderId,
       actor: 'staff',
       action: `PAYMENT_RECORDED_${kind.toUpperCase()}`,
       note: `Staff '${recordedBy}' recorded ${kind} payment of ${(amountHundredths / 100).toFixed(2)}M. Items: ${itemsJson}`,
-      createdAt: new Date().toISOString(),
+      createdAt: nowIso,
     });
 
     commitState();
     return payment;
   },
 
-  getOrderPayments(orderId: string): PaymentRecord[] {
+  async getOrderPayments(orderId: string): Promise<PaymentRecord[]> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      const rows = await db.select().from(schema.payments)
+        .where(eq(schema.payments.orderId, orderId))
+        .orderBy(schema.payments.recordedAt);
+      return rows.map(mapPayment);
+    }
     return getState().payments.filter(p => p.orderId === orderId);
   },
 
   // Enquiries (Customer Service)
-  createEnquiry(data: Omit<EnquiryRecord, 'id' | 'createdAt' | 'updatedAt'>): EnquiryRecord {
+  async createEnquiry(data: Omit<EnquiryRecord, 'id' | 'createdAt' | 'updatedAt'>): Promise<EnquiryRecord> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    const id = `enq-${Date.now()}-${randomUUID().slice(0, 6)}`;
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    if (db) {
+      const row = {
+        id,
+        source: data.source || 'website',
+        customerName: data.customerName || null,
+        robloxUsername: data.robloxUsername,
+        discordTag: data.discordTag || null,
+        orderCodeOrId: data.orderCodeOrId || null,
+        subject: data.subject,
+        message: data.message,
+        status: data.status || 'pending',
+        staffNotes: data.staffNotes || null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await db.insert(schema.enquiries).values(row);
+      return mapEnquiry({ ...row, createdAt: nowIso, updatedAt: nowIso });
+    }
+
     const s = getState();
-    const id = `enq-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-    const now = new Date().toISOString();
     const newEnquiry: EnquiryRecord = {
       ...data,
       id,
       status: data.status || 'pending',
-      createdAt: now,
-      updatedAt: now,
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
     s.enquiries.push(newEnquiry);
     commitState();
     return newEnquiry;
   },
 
-  listEnquiries(filters?: { status?: string; search?: string }): EnquiryRecord[] {
+  async listEnquiries(filters?: { status?: string; search?: string }): Promise<EnquiryRecord[]> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      let rows = await db.select().from(schema.enquiries).orderBy(desc(schema.enquiries.createdAt));
+      if (filters?.status && filters.status !== 'all') {
+        rows = rows.filter(e => e.status === filters.status);
+      }
+      if (filters?.search) {
+        const q = filters.search.toLowerCase().trim();
+        rows = rows.filter(e =>
+          e.robloxUsername.toLowerCase().includes(q) ||
+          (e.orderCodeOrId && e.orderCodeOrId.toLowerCase().includes(q)) ||
+          (e.discordTag && e.discordTag.toLowerCase().includes(q)) ||
+          e.subject.toLowerCase().includes(q)
+        );
+      }
+      return rows.map(mapEnquiry);
+    }
+
     const s = getState();
     let result = [...s.enquiries];
-
     if (filters?.status && filters.status !== 'all') {
       result = result.filter(e => e.status === filters.status);
     }
-
     if (filters?.search) {
       const q = filters.search.toLowerCase().trim();
       result = result.filter(e =>
@@ -500,21 +1094,39 @@ export const dbRepository = {
         e.subject.toLowerCase().includes(q)
       );
     }
-
-    // Newest first
     result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     return result;
   },
 
-  getEnquiryById(id: string): EnquiryRecord | undefined {
+  async getEnquiryById(id: string): Promise<EnquiryRecord | undefined> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      const rows = await db.select().from(schema.enquiries).where(eq(schema.enquiries.id, id));
+      return rows[0] ? mapEnquiry(rows[0]) : undefined;
+    }
     return getState().enquiries.find(e => e.id === id);
   },
 
-  updateEnquiryStatus(
+  async updateEnquiryStatus(
     id: string,
     status: 'pending' | 'in_progress' | 'resolved',
     staffNotes?: string
-  ): EnquiryRecord | null {
+  ): Promise<EnquiryRecord | null> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    const now = new Date();
+
+    if (db) {
+      const updateData: any = { status, updatedAt: now };
+      if (staffNotes !== undefined) {
+        updateData.staffNotes = staffNotes;
+      }
+      await db.update(schema.enquiries).set(updateData).where(eq(schema.enquiries.id, id));
+      const [updated] = await db.select().from(schema.enquiries).where(eq(schema.enquiries.id, id));
+      return updated ? mapEnquiry(updated) : null;
+    }
+
     const s = getState();
     const enquiry = s.enquiries.find(e => e.id === id);
     if (!enquiry) return null;
@@ -523,31 +1135,76 @@ export const dbRepository = {
     if (staffNotes !== undefined) {
       enquiry.staffNotes = staffNotes;
     }
-    enquiry.updatedAt = new Date().toISOString();
+    enquiry.updatedAt = now.toISOString();
     commitState();
     return enquiry;
   },
 
-  // Service Evidence & Proofs
-  createEvidence(data: Omit<EvidenceRecord, 'id' | 'createdAt'>): EvidenceRecord {
+  // Service Evidence & Discord-Based Proofs
+  async createEvidence(data: Omit<EvidenceRecord, 'id' | 'createdAt'>): Promise<EvidenceRecord> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    const id = `evi-${Date.now()}-${randomUUID().slice(0, 6)}`;
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    if (db) {
+      const row = {
+        id,
+        orderId: data.orderId,
+        serviceId: data.serviceId,
+        evidenceType: data.evidenceType,
+        mediaUrl: data.mediaUrl,
+        notes: data.notes || null,
+        customerConsentPublic: Boolean(data.customerConsentPublic),
+        staffApprovedPublic: Boolean(data.staffApprovedPublic),
+        isOngoing: Boolean(data.isOngoing),
+        isCompleted: data.isCompleted !== undefined ? Boolean(data.isCompleted) : true,
+        createdAt: now,
+        reviewedAt: data.reviewedAt ? new Date(data.reviewedAt) : null,
+        reviewedBy: data.reviewedBy || null,
+      };
+      await db.insert(schema.serviceEvidence).values(row);
+      return mapEvidence({ ...row, createdAt: nowIso, reviewedAt: data.reviewedAt || null });
+    }
+
     const s = getState();
-    const id = `evi-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-    const now = new Date().toISOString();
     const newEvidence: EvidenceRecord = {
       ...data,
       id,
-      createdAt: now,
+      createdAt: nowIso,
     };
     s.evidence.push(newEvidence);
     commitState();
     return newEvidence;
   },
 
-  getEvidenceByOrderId(orderId: string): EvidenceRecord[] {
+  async getEvidenceByOrderId(orderId: string): Promise<EvidenceRecord[]> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      const rows = await db.select().from(schema.serviceEvidence)
+        .where(eq(schema.serviceEvidence.orderId, orderId))
+        .orderBy(desc(schema.serviceEvidence.createdAt));
+      return rows.map(mapEvidence);
+    }
     return getState().evidence.filter(e => e.orderId === orderId);
   },
 
-  listEvidence(filters?: { isCompleted?: boolean; staffApprovedPublic?: boolean }): EvidenceRecord[] {
+  async listEvidence(filters?: { isCompleted?: boolean; staffApprovedPublic?: boolean }): Promise<EvidenceRecord[]> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      let rows = await db.select().from(schema.serviceEvidence).orderBy(desc(schema.serviceEvidence.createdAt));
+      if (filters?.isCompleted !== undefined) {
+        rows = rows.filter(e => e.isCompleted === filters.isCompleted);
+      }
+      if (filters?.staffApprovedPublic !== undefined) {
+        rows = rows.filter(e => e.staffApprovedPublic === filters.staffApprovedPublic);
+      }
+      return rows.map(mapEvidence);
+    }
+
     const s = getState();
     let result = [...s.evidence];
     if (filters?.isCompleted !== undefined) {
@@ -560,17 +1217,33 @@ export const dbRepository = {
     return result;
   },
 
-  updateEvidenceApproval(
+  async updateEvidenceApproval(
     id: string,
     staffApprovedPublic: boolean,
     reviewedBy: string
-  ): EvidenceRecord | null {
+  ): Promise<EvidenceRecord | null> {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    const now = new Date();
+
+    if (db) {
+      await db.update(schema.serviceEvidence)
+        .set({
+          staffApprovedPublic,
+          reviewedAt: now,
+          reviewedBy,
+        })
+        .where(eq(schema.serviceEvidence.id, id));
+      const [updated] = await db.select().from(schema.serviceEvidence).where(eq(schema.serviceEvidence.id, id));
+      return updated ? mapEvidence(updated) : null;
+    }
+
     const s = getState();
     const ev = s.evidence.find(e => e.id === id);
     if (!ev) return null;
 
     ev.staffApprovedPublic = staffApprovedPublic;
-    ev.reviewedAt = new Date().toISOString();
+    ev.reviewedAt = now.toISOString();
     ev.reviewedBy = reviewedBy;
     commitState();
     return ev;
@@ -581,7 +1254,46 @@ export const dbRepository = {
    * STRICT REQUIREMENT: Only returns evidence where customerConsentPublic === true
    * AND staffApprovedPublic === true AND isCompleted === true.
    */
-  getPublicProofs() {
+  async getPublicProofs() {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      const allEvidence = await db.select().from(schema.serviceEvidence)
+        .where(
+          and(
+            eq(schema.serviceEvidence.customerConsentPublic, true),
+            eq(schema.serviceEvidence.staffApprovedPublic, true),
+            eq(schema.serviceEvidence.isCompleted, true)
+          )
+        );
+      const allOrders = await db.select().from(schema.orders);
+      const allServices = await db.select().from(schema.services);
+
+      return allEvidence.map(ev => {
+        const order = allOrders.find(o => o.id === ev.orderId);
+        const service = allServices.find(svc => svc.id === ev.serviceId);
+        const fullUsername = order ? order.robloxUsername : 'BloxPlayer';
+        const usernameDisplay = ev.customerConsentPublic ? fullUsername : `${fullUsername.slice(0, 2)}***`;
+
+        return {
+          id: ev.id,
+          orderId: ev.orderId,
+          orderCode: order ? order.orderCode : 'BFS-XXXX',
+          serviceId: ev.serviceId,
+          serviceName: service ? service.name : 'Blox Fruit Service',
+          serviceCategory: service ? service.category : 'Carries',
+          robloxUsername: usernameDisplay,
+          evidenceType: ev.evidenceType,
+          mediaUrl: ev.mediaUrl,
+          notes: ev.notes,
+          customerConsentPublic: ev.customerConsentPublic,
+          staffApprovedPublic: ev.staffApprovedPublic,
+          createdAt: ev.createdAt instanceof Date ? ev.createdAt.toISOString() : String(ev.createdAt),
+          reviewedAt: ev.reviewedAt ? (ev.reviewedAt instanceof Date ? ev.reviewedAt.toISOString() : String(ev.reviewedAt)) : null,
+        };
+      });
+    }
+
     const s = getState();
     const approved = s.evidence.filter(
       e => e.customerConsentPublic === true && e.staffApprovedPublic === true && e.isCompleted === true
@@ -590,8 +1302,6 @@ export const dbRepository = {
     return approved.map(ev => {
       const order = s.orders.find(o => o.id === ev.orderId);
       const service = s.services.find(svc => svc.id === ev.serviceId);
-
-      // Mask username if needed or show full username if customer explicitly consented
       const fullUsername = order ? order.robloxUsername : 'BloxPlayer';
       const usernameDisplay = ev.customerConsentPublic ? fullUsername : `${fullUsername.slice(0, 2)}***`;
 
@@ -619,7 +1329,42 @@ export const dbRepository = {
    * Transparent live view of orders currently accepted, deposit_received, or in_progress.
    * STRICT REQUIREMENT: Anonymizes / masks usernames UNLESS customer consented to public display.
    */
-  getOngoingCarries() {
+  async getOngoingCarries() {
+    ensureDatabaseConfigured();
+    const db = getNeonDb();
+    if (db) {
+      const allOrders = await db.select().from(schema.orders);
+      const activeOrders = allOrders.filter(o => 
+        ['accepted', 'deposit_received', 'in_progress'].includes(o.status)
+      );
+      const allServices = await db.select().from(schema.services);
+      const allEvidence = await db.select().from(schema.serviceEvidence);
+
+      return activeOrders.map(o => {
+        const service = allServices.find(svc => svc.id === o.serviceId);
+        const evidence = allEvidence.filter(e => e.orderId === o.id);
+        const hasLiveScreenShare = evidence.some(e => e.evidenceType === 'screen_share_session');
+
+        let usernameDisplay = 'Client_***';
+        if (o.consentPublicProofs) {
+          usernameDisplay = o.robloxUsername;
+        } else if (o.robloxUsername.length > 3) {
+          usernameDisplay = `${o.robloxUsername.slice(0, 2)}***${o.robloxUsername.slice(-1)}`;
+        }
+
+        return {
+          orderCode: o.orderCode,
+          serviceName: service ? service.name : 'Blox Fruit Carry',
+          serviceCategory: service ? service.category : 'General',
+          robloxUsernameDisplay: usernameDisplay,
+          status: o.status,
+          paymentType: o.paymentType,
+          updatedAt: o.updatedAt instanceof Date ? o.updatedAt.toISOString() : String(o.updatedAt),
+          hasLiveScreenShare,
+        };
+      });
+    }
+
     const s = getState();
     const activeOrders = s.orders.filter(o => 
       ['accepted', 'deposit_received', 'in_progress'].includes(o.status)
@@ -630,7 +1375,6 @@ export const dbRepository = {
       const evidence = s.evidence.filter(e => e.orderId === o.id);
       const hasLiveScreenShare = evidence.some(e => e.evidenceType === 'screen_share_session');
 
-      // Privacy masking: Only display full username if customer consented
       let usernameDisplay = 'Client_***';
       if (o.consentPublicProofs) {
         usernameDisplay = o.robloxUsername;
@@ -651,7 +1395,7 @@ export const dbRepository = {
     });
   },
 
-  // Helper to reset to seed for test suite
+  // Helper to reset for test suite
   _resetForTesting() {
     stateCache = null;
     ensureDataDir();
