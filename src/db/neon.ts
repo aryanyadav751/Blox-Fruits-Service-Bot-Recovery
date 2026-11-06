@@ -131,6 +131,47 @@ export const NEON_SCHEMA_DDL = [
     reviewed_by TEXT
   );`,
 
+  `CREATE TABLE IF NOT EXISTS research_results (
+    id TEXT PRIMARY KEY,
+    item_id TEXT,
+    item_name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    current_value_m TEXT NOT NULL,
+    previous_value_m TEXT,
+    researched_value_m TEXT NOT NULL,
+    change_percent NUMERIC(8, 2),
+    status TEXT NOT NULL DEFAULT 'pending_approval',
+    confidence TEXT NOT NULL DEFAULT 'medium',
+    sources_count INTEGER NOT NULL DEFAULT 0,
+    discrepancy_note TEXT,
+    researched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    approved_at TIMESTAMPTZ,
+    approved_by TEXT,
+    notes TEXT
+  );`,
+
+  `CREATE TABLE IF NOT EXISTS research_sources (
+    id TEXT PRIMARY KEY,
+    research_id TEXT NOT NULL REFERENCES research_results(id) ON DELETE CASCADE,
+    source_name TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    reported_value_m TEXT NOT NULL,
+    snippets TEXT,
+    retrieved_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );`,
+
+  `CREATE TABLE IF NOT EXISTS value_history (
+    id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL,
+    item_name TEXT NOT NULL,
+    old_value_m TEXT NOT NULL,
+    new_value_m TEXT NOT NULL,
+    change_reason TEXT NOT NULL,
+    source_research_id TEXT,
+    updated_by TEXT NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );`,
+
   `CREATE INDEX IF NOT EXISTS idx_services_slug ON services(slug);`,
   `CREATE INDEX IF NOT EXISTS idx_orders_public_token ON orders(public_token);`,
   `CREATE INDEX IF NOT EXISTS idx_orders_order_code ON orders(order_code);`,
@@ -139,7 +180,10 @@ export const NEON_SCHEMA_DDL = [
   `CREATE INDEX IF NOT EXISTS idx_order_audit_order_id ON order_audit(order_id);`,
   `CREATE INDEX IF NOT EXISTS idx_payments_order_id ON payments(order_id);`,
   `CREATE INDEX IF NOT EXISTS idx_enquiries_status ON enquiries(status);`,
-  `CREATE INDEX IF NOT EXISTS idx_service_evidence_order_id ON service_evidence(order_id);`
+  `CREATE INDEX IF NOT EXISTS idx_service_evidence_order_id ON service_evidence(order_id);`,
+  `CREATE INDEX IF NOT EXISTS idx_research_results_status ON research_results(status);`,
+  `CREATE INDEX IF NOT EXISTS idx_research_sources_research_id ON research_sources(research_id);`,
+  `CREATE INDEX IF NOT EXISTS idx_value_history_item_id ON value_history(item_id);`
 ];
 
 let schemaInitialized = false;
@@ -181,7 +225,7 @@ export async function ensureNeonSchema(): Promise<void> {
       const allExist = coreTables.every(t => existingTableNames.has(t));
 
       if (allExist) {
-        console.log('Neon PostgreSQL core tables verified in public schema. Skipping DDL creation.');
+        console.log('Neon PostgreSQL core tables verified in public schema.');
         neonTablesAvailable = true;
         schemaInitialized = true;
         return;

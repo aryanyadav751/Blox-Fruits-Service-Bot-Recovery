@@ -32,11 +32,12 @@ import {
 } from 'lucide-react';
 import { api } from '../../lib/api.ts';
 import { Enquiry, EnquiryStatus, Service } from '../../types/index.ts';
+import { LiveValueResearchTab } from '../../components/admin/LiveValueResearchTab.tsx';
 
 interface AdminDashboardPageProps {
   onNavigate: (path: string) => void;
   onLogout: () => void;
-  initialTab?: 'orders' | 'support' | 'proofs' | 'catalog';
+  initialTab?: 'orders' | 'support' | 'proofs' | 'catalog' | 'research';
   onServiceChange?: () => void;
 }
 
@@ -46,7 +47,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
   initialTab = 'orders',
   onServiceChange,
 }) => {
-  const [activeTab, setActiveTab] = useState<'orders' | 'support' | 'proofs' | 'catalog'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'orders' | 'support' | 'proofs' | 'catalog' | 'research'>(initialTab);
 
   // --- ORDERS STATE ---
   const [orders, setOrders] = useState<any[]>([]);
@@ -375,6 +376,18 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
 
         <div className="flex items-center gap-2.5 flex-wrap">
           <button
+            onClick={() => setActiveTab('research')}
+            className={`px-3 py-1.5 border text-xs rounded-lg transition-colors flex items-center gap-1.5 ${
+              activeTab === 'research'
+                ? 'bg-amber-400 text-slate-950 font-bold border-amber-400 shadow-sm'
+                : 'bg-slate-900 hover:bg-slate-800 border-slate-800 text-slate-300 hover:text-white'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Live Value Research</span>
+          </button>
+
+          <button
             onClick={() => setActiveTab('catalog')}
             className={`px-3 py-1.5 border text-xs rounded-lg transition-colors flex items-center gap-1.5 ${
               activeTab === 'catalog'
@@ -433,6 +446,18 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
           <span className="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] text-slate-300 font-mono">
             {orders.length}
           </span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('research')}
+          className={`pb-3 px-4 text-xs font-bold border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${
+            activeTab === 'research'
+              ? 'border-amber-400 text-amber-400'
+              : 'border-transparent text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+          <span>Live Value Research</span>
         </button>
 
         <button
@@ -795,6 +820,17 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
             </div>
           )}
         </div>
+      )}
+
+      {/* TAB: LIVE VALUE RESEARCH */}
+      {activeTab === 'research' && (
+        <LiveValueResearchTab 
+          catalog={catalog} 
+          onCatalogRefresh={() => {
+            loadCatalog();
+            if (onServiceChange) onServiceChange();
+          }} 
+        />
       )}
 
       {/* TAB 4: CHANGE CATALOGUE */}

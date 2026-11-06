@@ -129,3 +129,57 @@ export interface OngoingServiceItem {
   updatedAt: string;
   hasLiveScreenShare?: boolean;
 }
+
+export type ResearchConfidence = 'high' | 'medium' | 'low' | 'conflict' | 'not_found';
+export type ResearchStatus = 'pending_approval' | 'approved' | 'rejected' | 'conflict';
+
+export interface ResearchSource {
+  id: string;
+  researchId: string;
+  sourceName: string;
+  sourceUrl: string;
+  reportedValueM: string;
+  snippets?: string | null;
+  retrievedAt: string;
+}
+
+export interface ResearchResult {
+  id: string;
+  itemId?: string | null;
+  itemName: string;
+  category: string;
+  currentValueM: string;
+  previousValueM?: string | null;
+  researchedValueM: string;
+  changePercent?: number | null;
+  status: ResearchStatus;
+  confidence: ResearchConfidence;
+  sourcesCount: number;
+  discrepancyNote?: string | null;
+  researchedAt: string;
+  approvedAt?: string | null;
+  approvedBy?: string | null;
+  notes?: string | null;
+  sources?: ResearchSource[];
+}
+
+export interface ValueHistoryItem {
+  id: string;
+  itemId: string;
+  itemName: string;
+  oldValueM: string;
+  newValueM: string;
+  changeReason: string;
+  sourceResearchId?: string | null;
+  updatedBy: string;
+  timestamp: string;
+}
+
+export interface ResearchScheduleConfig {
+  enabled: boolean;
+  intervalHours: number;
+  lastRunAt?: string | null;
+  nextRunAt?: string | null;
+  targetCategories: string[];
+}
+

@@ -14,6 +14,11 @@ import {
   createStaffSessionToken, 
   verifyStaffSessionToken 
 } from './src/lib/auth.ts';
+import { 
+  researchSingleItem, 
+  researchCatalogItems, 
+  initValueResearchScheduler 
+} from './src/server/valueResearcher.ts';
 
 dotenv.config();
 
@@ -982,6 +987,198 @@ app.post('/api/admin/evidence/:id/approval', requireStaffAuth, async (req, res) 
   }
 });
 
+// ============================================================================
+// BLOX FRUITS VALUE RESEARCH SYSTEM ENDPOINTS
+// ============================================================================
+
+// 17. Public Market Verification Status
+app.get('/api/public/market-status', async (_req, res) => {
+  try {
+    const history = await dbRepository.listValueHistory();
+    const research = await dbRepository.listResearchResults();
+    const approvedItems = research.filter(r => r.status === 'approved');
+    const latestUpdate = history[0]?.timestamp || approvedItems[0]?.approvedAt || null;
+
+    res.json({
+      success: true,
+      lastVerifiedAt: latestUpdate,
+      totalApprovedUpdates: history.length,
+      recentApprovalsCount: approvedItems.length,
+      note: 'All customer catalog and trade values are verified against authoritative market references and manually approved by senior staff.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: 'Failed to retrieve market status' });
+  }
+});
+
+// 18. List Researched Values (Admin Only)
+app.get('/api/admin/research', requireStaffAuth, async (req, res) => {
+  try {
+    const status = req.query.status?.toString();
+    const category = req.query.category?.toString();
+    const search = req.query.search?.toString();
+
+    const results = await dbRepository.listResearchResults({ status, category, search });
+    res.json({ success: true, results });
+  } catch (err: any) {
+    console.error('List research results error:', err);
+    res.status(500).json({ success: false, error: 'Failed to list research results' });
+  }
+});
+
+// 19. Trigger Research for a Single Item (Admin Only)
+app.post('/api/admin/research/single', requireStaffAuth, async (req, res) => {
+  try {
+    const { id, name, category, priceM } = req.body;
+    if (!name || !category || priceM === undefined) {
+      return res.status(400).json({ success: false, error: 'Name, category, and priceM are required' });
+    }
+
+    const session = (req as any).staffSession;
+    const { result, sources } = await researchSingleItem(
+      { id, name, category, priceM: String(priceM) },
+      session.staffId
+    );
+
+    res.json({ success: true, result, sources });
+  } catch (err: any) {
+    console.error('Single item research error:', err);
+    res.status(500).json({ success: false, error: err.message || 'Failed to research item' });
+  }
+});
+
+// 20. Batch Research Items (All or by Category) (Admin Only)
+app.post('/api/admin/research/batch', requireStaffAuth, async (req, res) => {
+  try {
+    const { category } = req.body;
+    const session = (req as any).staffSession;
+
+    const allServices = await dbRepository.getServices();
+    let targets = allServices;
+    if (category && category !== 'all') {
+      targets = allServices.filter(s => s.category.toLowerCase() === String(category).toLowerCase());
+    }
+
+    if (targets.length === 0) {
+      return res.status(400).json({ success: false, error: 'No items found matching the selected category' });
+    }
+
+    const payload = targets.map(t => ({
+      id: t.id,
+      name: t.name,
+      category: t.category,
+      priceM: t.priceM,
+    }));
+
+    const results = await researchCatalogItems(payload, session.staffId);
+    res.json({ success: true, count: results.length, results });
+  } catch (err: any) {
+    console.error('Batch research error:', err);
+    res.status(500).json({ success: false, error: err.message || 'Failed to execute batch research' });
+  }
+});
+
+// 21. Approve Researched Value & Apply to Official Catalogue (Admin Only)
+app.post('/api/admin/research/:id/approve', requireStaffAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { overrideValueM } = req.body;
+    const session = (req as any).staffSession;
+
+    const outcome = await dbRepository.approveResearchResult(id, session.staffId, overrideValueM);
+    res.json({ 
+      success: true, 
+      message: 'Value approved and published to official catalogue!',
+      service: outcome.service,
+      research: outcome.research 
+    });
+  } catch (err: any) {
+    console.error('Approve research error:', err);
+    res.status(500).json({ success: false, error: err.message || 'Failed to approve research value' });
+  }
+});
+
+// 22. Reject Researched Value (Admin Only)
+app.post('/api/admin/research/:id/reject', requireStaffAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const session = (req as any).staffSession;
+
+    const rejected = await dbRepository.rejectResearchResult(id, session.staffId, reason);
+    if (!rejected) {
+      return res.status(404).json({ success: false, error: 'Research record not found' });
+    }
+
+    res.json({ success: true, research: rejected });
+  } catch (err: any) {
+    console.error('Reject research error:', err);
+    res.status(500).json({ success: false, error: err.message || 'Failed to reject research value' });
+  }
+});
+
+// 23. Manually Edit Proposed Researched Value (Admin Only)
+app.put('/api/admin/research/:id/edit', requireStaffAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { updatedValueM, notes } = req.body;
+
+    if (!updatedValueM || isNaN(parseFloat(updatedValueM))) {
+      return res.status(400).json({ success: false, error: 'Valid numeric updatedValueM is required' });
+    }
+
+    const updated = await dbRepository.editResearchResult(id, String(updatedValueM), notes);
+    if (!updated) {
+      return res.status(404).json({ success: false, error: 'Research record not found' });
+    }
+
+    res.json({ success: true, research: updated });
+  } catch (err: any) {
+    console.error('Edit research error:', err);
+    res.status(500).json({ success: false, error: err.message || 'Failed to update research value' });
+  }
+});
+
+// 24. Value History Audit Log (Admin Only)
+app.get('/api/admin/research/history', requireStaffAuth, async (req, res) => {
+  try {
+    const itemId = req.query.itemId?.toString();
+    const history = await dbRepository.listValueHistory(itemId);
+    res.json({ success: true, history });
+  } catch (err: any) {
+    console.error('List value history error:', err);
+    res.status(500).json({ success: false, error: 'Failed to retrieve value history' });
+  }
+});
+
+// 25. Get / Update Research Schedule Configuration (Admin Only)
+app.get('/api/admin/research/schedule', requireStaffAuth, async (_req, res) => {
+  try {
+    const config = await dbRepository.getResearchScheduleConfig();
+    res.json({ success: true, config });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: 'Failed to retrieve schedule config' });
+  }
+});
+
+app.post('/api/admin/research/schedule', requireStaffAuth, async (req, res) => {
+  try {
+    const { enabled, intervalHours, targetCategories } = req.body;
+    const updateData: any = {};
+    if (typeof enabled === 'boolean') updateData.enabled = enabled;
+    if (intervalHours && !isNaN(parseInt(intervalHours, 10))) {
+      updateData.intervalHours = Math.max(1, parseInt(intervalHours, 10));
+    }
+    if (Array.isArray(targetCategories)) updateData.targetCategories = targetCategories;
+
+    const updated = await dbRepository.updateResearchScheduleConfig(updateData);
+    res.json({ success: true, config: updated });
+  } catch (err: any) {
+    console.error('Update schedule error:', err);
+    res.status(500).json({ success: false, error: 'Failed to update schedule config' });
+  }
+});
+
 export { app };
 export default app;
 
@@ -1001,6 +1198,13 @@ async function startServer() {
     } catch (err) {
       console.error('Warning initializing Neon database at startup:', err);
     }
+  }
+
+  // Initialize background value research scheduler
+  try {
+    initValueResearchScheduler();
+  } catch (schedErr) {
+    console.warn('Could not start value research scheduler:', schedErr);
   }
 
   if (!isProd) {

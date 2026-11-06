@@ -5,7 +5,11 @@ import {
   Enquiry, 
   CreateEnquiryPayload,
   ServiceEvidence,
-  OngoingServiceItem 
+  OngoingServiceItem,
+  ResearchResult,
+  ResearchSource,
+  ValueHistoryItem,
+  ResearchScheduleConfig
 } from '../types/index.ts';
 
 export interface CreateOrderPayload {
@@ -451,5 +455,157 @@ export const api = {
     if (!res.ok || !data.success) {
       throw new Error(data.error || 'Failed to delete service');
     }
+  },
+
+  // --- VALUE RESEARCH & MARKET VERIFICATION ---
+  async getMarketStatus(): Promise<{
+    success: boolean;
+    lastVerifiedAt: string | null;
+    totalApprovedUpdates: number;
+    recentApprovalsCount: number;
+    note: string;
+  }> {
+    const res = await fetch('/api/public/market-status');
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to fetch market status');
+    }
+    return data;
+  },
+
+  async adminGetResearch(filters?: { status?: string; category?: string; search?: string }): Promise<ResearchResult[]> {
+    const params = new URLSearchParams();
+    if (filters?.status && filters.status !== 'all') params.append('status', filters.status);
+    if (filters?.category && filters.category !== 'all') params.append('category', filters.category);
+    if (filters?.search) params.append('search', filters.search);
+
+    const res = await fetch(`/api/admin/research?${params.toString()}`, {
+      credentials: 'include',
+      headers: getAdminHeaders(),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to fetch research items');
+    }
+    return data.results;
+  },
+
+  async adminResearchSingleItem(payload: { id?: string; name: string; category: string; priceM: string }): Promise<{
+    result: ResearchResult;
+    sources: ResearchSource[];
+  }> {
+    const res = await fetch('/api/admin/research/single', {
+      method: 'POST',
+      credentials: 'include',
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to research item');
+    }
+    return data;
+  },
+
+  async adminResearchBatch(payload?: { category?: string }): Promise<ResearchResult[]> {
+    const res = await fetch('/api/admin/research/batch', {
+      method: 'POST',
+      credentials: 'include',
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload || {}),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to execute batch research');
+    }
+    return data.results;
+  },
+
+  async adminApproveResearch(id: string, overrideValueM?: string): Promise<{
+    success: boolean;
+    service?: Service;
+    research: ResearchResult;
+    message: string;
+  }> {
+    const res = await fetch(`/api/admin/research/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ overrideValueM }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to approve research value');
+    }
+    return data;
+  },
+
+  async adminRejectResearch(id: string, reason?: string): Promise<ResearchResult> {
+    const res = await fetch(`/api/admin/research/${encodeURIComponent(id)}/reject`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ reason }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to reject research value');
+    }
+    return data.research;
+  },
+
+  async adminEditResearch(id: string, updatedValueM: string, notes?: string): Promise<ResearchResult> {
+    const res = await fetch(`/api/admin/research/${encodeURIComponent(id)}/edit`, {
+      method: 'PUT',
+      credentials: 'include',
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ updatedValueM, notes }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to update research value');
+    }
+    return data.research;
+  },
+
+  async adminGetValueHistory(itemId?: string): Promise<ValueHistoryItem[]> {
+    const url = itemId 
+      ? `/api/admin/research/history?itemId=${encodeURIComponent(itemId)}` 
+      : '/api/admin/research/history';
+    const res = await fetch(url, {
+      credentials: 'include',
+      headers: getAdminHeaders(),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to fetch value history');
+    }
+    return data.history;
+  },
+
+  async adminGetResearchSchedule(): Promise<ResearchScheduleConfig> {
+    const res = await fetch('/api/admin/research/schedule', {
+      credentials: 'include',
+      headers: getAdminHeaders(),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to fetch schedule config');
+    }
+    return data.config;
+  },
+
+  async adminUpdateResearchSchedule(payload: Partial<ResearchScheduleConfig>): Promise<ResearchScheduleConfig> {
+    const res = await fetch('/api/admin/research/schedule', {
+      method: 'POST',
+      credentials: 'include',
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to update schedule config');
+    }
+    return data.config;
   },
 };

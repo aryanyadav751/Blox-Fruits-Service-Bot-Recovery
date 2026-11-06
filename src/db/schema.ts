@@ -147,3 +147,56 @@ export const serviceEvidenceRelations = relations(serviceEvidence, ({ one }) => 
     references: [services.id],
   }),
 }));
+
+export const researchResults = pgTable('research_results', {
+  id: text('id').primaryKey(),
+  itemId: text('item_id'),
+  itemName: text('item_name').notNull(),
+  category: text('category').notNull(),
+  currentValueM: text('current_value_m').notNull(),
+  previousValueM: text('previous_value_m'),
+  researchedValueM: text('researched_value_m').notNull(),
+  changePercent: numeric('change_percent', { precision: 8, scale: 2 }),
+  status: text('status').notNull().default('pending_approval'), // 'pending_approval' | 'approved' | 'rejected' | 'conflict'
+  confidence: text('confidence').notNull().default('medium'), // 'high' | 'medium' | 'low' | 'conflict' | 'not_found'
+  sourcesCount: integer('sources_count').notNull().default(0),
+  discrepancyNote: text('discrepancy_note'),
+  researchedAt: timestamp('researched_at', { withTimezone: true }).defaultNow().notNull(),
+  approvedAt: timestamp('approved_at', { withTimezone: true }),
+  approvedBy: text('approved_by'),
+  notes: text('notes'),
+});
+
+export const researchSources = pgTable('research_sources', {
+  id: text('id').primaryKey(),
+  researchId: text('research_id').notNull().references(() => researchResults.id, { onDelete: 'cascade' }),
+  sourceName: text('source_name').notNull(),
+  sourceUrl: text('source_url').notNull(),
+  reportedValueM: text('reported_value_m').notNull(),
+  snippets: text('snippets'),
+  retrievedAt: timestamp('retrieved_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const valueHistory = pgTable('value_history', {
+  id: text('id').primaryKey(),
+  itemId: text('item_id').notNull(),
+  itemName: text('item_name').notNull(),
+  oldValueM: text('old_value_m').notNull(),
+  newValueM: text('new_value_m').notNull(),
+  changeReason: text('change_reason').notNull(), // 'admin_approved_research' | 'manual_admin_edit' | 'initial_seed'
+  sourceResearchId: text('source_research_id'),
+  updatedBy: text('updated_by').notNull(),
+  timestamp: timestamp('timestamp', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const researchResultsRelations = relations(researchResults, ({ many }) => ({
+  sources: many(researchSources),
+}));
+
+export const researchSourcesRelations = relations(researchSources, ({ one }) => ({
+  research: one(researchResults, {
+    fields: [researchSources.researchId],
+    references: [researchResults.id],
+  }),
+}));
+

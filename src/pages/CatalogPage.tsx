@@ -48,15 +48,22 @@ export const CatalogPage: React.FC<CatalogPageProps> = ({
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-8 pb-20">
       {/* Header */}
-      <div className="space-y-2">
-        <div className="text-xs uppercase tracking-wider text-amber-400 font-semibold">
-          Published Services Catalog
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <span className="text-xs uppercase tracking-wider text-amber-400 font-semibold">
+            Published Services Catalog
+          </span>
+          <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] text-emerald-300 font-medium flex items-center gap-1">
+            <ShieldCheck className="w-3 h-3 text-emerald-400" />
+            Market-Verified Trade Values
+          </span>
         </div>
         <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
           Blox Fruit Carries & Quests
         </h1>
-        <p className="text-xs sm:text-sm text-slate-400 max-w-2xl">
+        <p className="text-xs sm:text-sm text-slate-400 max-w-2xl leading-relaxed">
           Browse verified carry services. All prices are measured in Millions (M) of in-game trade value. 
+          Every rate is researched against live online trading indexes and confirmed by senior administrators.
           50% deposit required upfront; remaining 50% only after full completion.
         </p>
       </div>
@@ -181,6 +188,14 @@ export const CatalogPage: React.FC<CatalogPageProps> = ({
                       <span className="line-clamp-2">{service.exclusions}</span>
                     </div>
                   )}
+
+                  {/* Market Verification Status Strip */}
+                  <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1 font-mono">
+                    <span>Verified: {new Date(service.updatedAt || service.createdAt).toLocaleDateString()}</span>
+                    {service.needsConfirmation && (
+                      <span className="text-amber-400 font-sans font-medium">Pending Final Review</span>
+                    )}
+                  </div>
                 </div>
 
                 <div className="pt-4 mt-4 border-t border-slate-800/60 flex items-center justify-between gap-3">
